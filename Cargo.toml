@@ -1,0 +1,54 @@
+[package]
+name = "svid"
+version = "0.1.0"
+edition = "2021"
+description = "Stateless Verifiable ID — native + WASM 64-bit ID generator"
+license = "Apache-2.0"
+authors = ["lavajnv@gmail.com (Lava Bokam)"]
+repository = "https://github.com/storyvis/svid"
+homepage = "https://github.com/storyvis/svid"
+documentation = "https://docs.rs/svid"
+readme = "README.md"
+keywords = ["id", "uuid", "snowflake", "wasm", "identifier"]
+categories = ["data-structures", "wasm", "encoding"]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rand = "0.8"
+bs58 = "0.5"
+paste = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+diesel = { version = "2", features = ["postgres"], optional = true }
+ts-rs = { version = "10", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+default = []
+serde = ["dep:serde"]
+diesel = ["dep:diesel"]
+ts = ["dep:ts-rs"]
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-reference-types",
+    "--enable-multivalue",
+]

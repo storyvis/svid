@@ -1,0 +1,45 @@
+{
+  "name": "svid",
+  "version": "0.1.0",
+  "description": "Stateless Verifiable ID — 64-bit ID generator (WASM)",
+  "license": "Apache-2.0",
+  "author": "Lava Bokam <lavajnv@gmail.com>",
+  "homepage": "https://github.com/storyvis/svid",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/storyvis/svid.git"
+  },
+  "bugs": {
+    "url": "https://github.com/storyvis/svid/issues"
+  },
+  "keywords": [
+    "id",
+    "uuid",
+    "snowflake",
+    "wasm",
+    "identifier"
+  ],
+  "type": "module",
+  "main": "pkg/svid.js",
+  "module": "pkg/svid.js",
+  "types": "pkg/svid.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/svid.d.ts",
+      "import": "./pkg/svid.js",
+      "default": "./pkg/svid.js"
+    }
+  },
+  "files": [
+    "pkg"
+  ],
+  "sideEffects": [
+    "./pkg/svid.js",
+    "./pkg/svid_bg.js"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target bundler --release",
+    "build:dev": "wasm-pack build --target bundler --dev",
+    "prepublishOnly": "wasm-pack build --target bundler --release"
+  }
+}

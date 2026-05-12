@@ -1,0 +1,4 @@
+target/
+.claude/
+/pkg
+/node_modules
