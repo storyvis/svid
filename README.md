@@ -147,24 +147,9 @@ The crate ships JS/TS bindings built with `wasm-bindgen`. IDs cross the FFI as n
 
 ```bash
 npm run build           # wraps: wasm-pack build --target bundler --release
-# wasm artifacts land in ./pkg/; the root package.json is what gets published.
+
 ```
 
-`--target bundler` works with Vite, Webpack, Rollup, Next.js, and Bun. For other JS environments swap in `--target web` or `--target nodejs`.
-
-### Install (local, from this repo)
-
-```bash
-npm install /absolute/path/to/svid
-```
-
-### Publish
-
-```bash
-npm publish              # runs the build via prepublishOnly, then publishes the root package
-```
-
-The auto-generated `pkg/package.json` that `wasm-pack` writes is ignored — only the root `package.json` is authoritative.
 
 ### Usage
 
@@ -198,20 +183,6 @@ svidEpoch();             // 1767225600n
 decodeBase58(b) === id;  // true
 ```
 
-### Full export surface
-
-| JS export | Signature |
-|---|---|
-| `generateSvid` | `(idType: number) => bigint` |
-| `encodeSvid` | `(timestamp, isClient, idType, random) => bigint` |
-| `decodeSvid` | `(id: bigint) => DecodedSvid` |
-| `encodeBase58` / `decodeBase58` | `bigint ⇄ string` |
-| `encodeHumanReadable` / `decodeHumanReadable` | `bigint ⇄ string` (11-char) |
-| `decodeHumanReadableExpecting` | `(s, expectedTag) => bigint` (tag-checked) |
-| `extractTag`, `extractTimestampBits`, `extractIsClient`, `extractRandomBits`, `extractUnixTimestamp` | bit-field accessors |
-| `svidEpoch`, `humanReadableLen` | constants |
-
-`DecodedSvid` is `{ timestamp: number; isClient: boolean; idType: number; random: number; unixTimestamp: bigint }`.
 
 ### Notes
 
