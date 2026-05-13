@@ -250,6 +250,26 @@ macro_rules! define_id {
                 }
             }
 
+            #[cfg(feature = "autosurgeon")]
+            impl ::autosurgeon::Reconcile for $variant {
+                type Key<'a> = ::autosurgeon::reconcile::NoKey;
+                fn reconcile<R: ::autosurgeon::Reconciler>(
+                    &self,
+                    reconciler: R,
+                ) -> ::std::result::Result<(), R::Error> {
+                    self.0.reconcile(reconciler)
+                }
+            }
+
+            #[cfg(feature = "autosurgeon")]
+            impl ::autosurgeon::Hydrate for $variant {
+                fn hydrate_int(
+                    i: i64,
+                ) -> ::std::result::Result<Self, ::autosurgeon::HydrateError> {
+                    Ok(Self(i))
+                }
+            }
+
             // ---- compile-time marker ----
             #[derive(Debug, Clone, Copy, Default)]
             pub struct [<$variant Marker>];
@@ -298,7 +318,7 @@ macro_rules! define_id_registry {
 ///     /// Doc comment for the enum.
 ///     MyDomainId, "my-domain" {
 ///         Folder(FolderId),
-///         Root(RootFolderId),
+///         SharedFolder(SharedFolderId),
 ///     }
 /// }
 /// ```
@@ -457,6 +477,30 @@ macro_rules! define_domain_enum {
                 >>::from_sql(bytes)?;
                 <Self as ::std::convert::TryFrom<i64>>::try_from(v)
                     .map_err(|e: String| e.into())
+            }
+        }
+
+        #[cfg(feature = "autosurgeon")]
+        impl ::autosurgeon::Reconcile for $enum_name {
+            type Key<'a> = ::autosurgeon::reconcile::NoKey;
+            fn reconcile<R: ::autosurgeon::Reconciler>(
+                &self,
+                reconciler: R,
+            ) -> ::std::result::Result<(), R::Error> {
+                self.to_i64().reconcile(reconciler)
+            }
+        }
+
+        #[cfg(feature = "autosurgeon")]
+        impl ::autosurgeon::Hydrate for $enum_name {
+            fn hydrate_int(
+                i: i64,
+            ) -> ::std::result::Result<Self, ::autosurgeon::HydrateError> {
+                <Self as ::std::convert::TryFrom<i64>>::try_from(i)
+                    .map_err(|e| ::autosurgeon::HydrateError::unexpected(
+                        concat!("valid ", stringify!($enum_name), " SVID tag"),
+                        e,
+                    ))
             }
         }
     };

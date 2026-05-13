@@ -146,3 +146,56 @@ fn from_base58_rejects_overlong_input_with_unified_message() {
         err
     );
 }
+
+#[cfg(feature = "autosurgeon")]
+mod autosurgeon_smoke {
+    use super::*;
+    use autosurgeon::{hydrate, reconcile, Hydrate, Reconcile};
+
+    #[derive(Reconcile, Hydrate, Debug, PartialEq)]
+    struct Doc {
+        user: UserId,
+        folder: FolderEnum,
+    }
+
+    #[test]
+    fn newtype_and_domain_enum_roundtrip_through_automerge() {
+        let reg = IdRegistry::new(false);
+        let user: UserId = reg.user_id.generate_id();
+        let folder: FolderId = reg.folder_id.generate_id();
+        let doc = Doc {
+            user,
+            folder: FolderEnum::Folder(folder),
+        };
+
+        let mut am = automerge::AutoCommit::new();
+        reconcile(&mut am, &doc).expect("reconcile");
+        let back: Doc = hydrate(&am).expect("hydrate");
+        assert_eq!(back, doc);
+    }
+
+    #[test]
+    fn domain_enum_hydrate_rejects_wrong_tag() {
+        // Round-trip a UserId i64 into the doc, then try to hydrate it as
+        // FolderEnum — the TryFrom-based Hydrate should fail with a
+        // HydrateError because the tag doesn't match any FolderEnum variant.
+        let reg = IdRegistry::new(false);
+        let bogus = reg.user_id.generate_id().to_i64();
+
+        #[derive(Reconcile)]
+        struct Wrapper {
+            value: i64,
+        }
+        #[derive(Hydrate, Debug)]
+        struct WrapperOut {
+            #[allow(dead_code)]
+            value: FolderEnum,
+        }
+
+        let mut am = automerge::AutoCommit::new();
+        reconcile(&mut am, &Wrapper { value: bogus }).expect("reconcile");
+        let err = hydrate::<_, WrapperOut>(&am).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("FolderEnum") || msg.contains("folder"), "{}", msg);
+    }
+}
