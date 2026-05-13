@@ -1,30 +1,68 @@
 //! Bit-level helpers for the SVID layout.
 //!
-//! The 64-bit layout:
+//! 64-bit layout (default `bits-balanced` profile):
 //!
 //! ```text
-//!  63 62              32 31 30      24 23                             0
-//! ┌──┬──────────────────┬──┬──────────┬────────────────────────────────┐
-//! │S0│    TIMESTAMP     │W │ ID TYPE  │            RANDOM              │
-//! │1b│     31 bits      │1b│  7 bits  │            24 bits             │
-//! └──┴──────────────────┴──┴──────────┴────────────────────────────────┘
+//!  63 62                   34 33                            8 7  6     0
+//! ┌──┬──────────────────────┬───────────────────────────────┬──┬────────┐
+//! │S0│    TIMESTAMP (T)     │         RANDOM (M)            │W │  TAG  │
+//! │1b│     29 bits          │         26 bits               │1b│ 7 bits│
+//! └──┴──────────────────────┴───────────────────────────────┴──┴────────┘
+//!         T + M = 55 (varies by compile-time profile)
 //! ```
+//!
+//! `tag` and `source` sit at fixed LSB positions across all profiles, so
+//! downstream raw bit-ops like `id & 0x7F` stay stable when the bit budget
+//! is reallocated. Timestamp is at the top (just below the sign bit) so
+//! i64 ordering matches chronological order, as in ULID / Snowflake / UUIDv7.
+//!
+//! Profile selection (Cargo features):
+//! - `bits-long-life`: T=31 (68 yr), M=24
+//! - `bits-balanced` (default): T=29 (17 yr), M=26
+//! - `bits-high-rand`: T=28 (8.5 yr), M=27
 
 pub const SVID_EPOCH: i64 = 1767225600;
 
-pub const TIMESTAMP_BITS: u8 = 31;
+// --- Bit-layout profile selection (compile-time) ---
+#[cfg(not(any(feature = "bits-long-life", feature = "bits-balanced", feature = "bits-high-rand")))]
+compile_error!(
+    "svid: enable exactly one bit-layout feature: bits-long-life | bits-balanced | bits-high-rand"
+);
+
+#[cfg(any(
+    all(feature = "bits-long-life", feature = "bits-balanced"),
+    all(feature = "bits-long-life", feature = "bits-high-rand"),
+    all(feature = "bits-balanced", feature = "bits-high-rand"),
+))]
+compile_error!("svid: exactly one bit-layout feature may be enabled at a time");
+
+#[cfg(feature = "bits-long-life")]
+const _PROFILE: (u8, u8) = (31, 24);
+#[cfg(feature = "bits-balanced")]
+const _PROFILE: (u8, u8) = (29, 26);
+#[cfg(feature = "bits-high-rand")]
+const _PROFILE: (u8, u8) = (28, 27);
+
+pub const TIMESTAMP_BITS: u8 = _PROFILE.0;
+pub const RANDOM_BITS: u8 = _PROFILE.1;
 pub const SOURCE_BITS: u8 = 1;
 pub const IDTYPE_BITS: u8 = 7;
-pub const RANDOM_BITS: u8 = 24;
 
-pub const RANDOM_MASK: i64 = (1 << RANDOM_BITS) - 1;
+// 1 (sign) + TS + RAND + 1 (src) + 7 (tag) must total 64.
+const _: () = assert!(
+    1 + TIMESTAMP_BITS as u32 + RANDOM_BITS as u32 + SOURCE_BITS as u32 + IDTYPE_BITS as u32 == 64,
+    "svid: bit-layout profile must sum to 64 bits"
+);
+
 pub const IDTYPE_MASK: i64 = (1 << IDTYPE_BITS) - 1;
+pub const RANDOM_MASK: i64 = (1 << RANDOM_BITS) - 1;
 pub const TIMESTAMP_MASK: i64 = (1 << TIMESTAMP_BITS) - 1;
 
-pub const RANDOM_SHIFT: u8 = 0;
-pub const IDTYPE_SHIFT: u8 = 24;
-pub const SOURCE_SHIFT: u8 = 31;
-pub const TIMESTAMP_SHIFT: u8 = 32;
+// Field order [sign][ts][rand][src][tag]: tag is LSB, ts is at the top.
+pub const IDTYPE_SHIFT: u8 = 0;
+pub const SOURCE_SHIFT: u8 = IDTYPE_BITS;
+pub const RANDOM_SHIFT: u8 = SOURCE_SHIFT + SOURCE_BITS;
+pub const TIMESTAMP_SHIFT: u8 = RANDOM_SHIFT + RANDOM_BITS;
 
 /// Length of the fixed-width human-readable string format (`to_str()` / `from_str_id`).
 /// Distinguishes from variable-length `to_base58()` via length check.
@@ -54,7 +92,7 @@ impl SvidExt for i64 {
     }
     #[inline]
     fn random_bits(&self) -> u32 {
-        (*self & RANDOM_MASK) as u32
+        ((*self >> RANDOM_SHIFT) & RANDOM_MASK) as u32
     }
     #[inline]
     fn unix_timestamp(&self) -> i64 {
@@ -66,9 +104,9 @@ impl SvidExt for i64 {
 #[inline]
 pub fn encode_svid(timestamp: u32, is_client: bool, tag: u8, random: u32) -> i64 {
     ((timestamp as i64 & TIMESTAMP_MASK) << TIMESTAMP_SHIFT)
+        | ((random as i64 & RANDOM_MASK) << RANDOM_SHIFT)
         | ((if is_client { 1i64 } else { 0i64 }) << SOURCE_SHIFT)
         | ((tag as i64 & IDTYPE_MASK) << IDTYPE_SHIFT)
-        | (random as i64 & RANDOM_MASK)
 }
 
 /// Encode an `i64` SVID as a fixed-width 11-char string.
@@ -93,16 +131,28 @@ pub fn id_to_human_readable(id: i64) -> String {
 ///
 /// Accepts variable-length base58 (≤ 8 decoded bytes). Used by every
 /// `bs58 → i64` path in the crate so that error messages stay consistent.
+///
+/// Tolerates excess leading zero bytes that arise from fixed-width
+/// padding in [`id_to_human_readable`] — when the i64's bs58 form is
+/// shorter than `HUMAN_READABLE_LEN`, padding `'1'` chars get decoded as
+/// leading zero bytes, which we strip back here.
 pub fn decode_i64_base58(s: &str) -> Result<i64, String> {
     let bytes = bs58::decode(s).into_vec().map_err(|e| e.to_string())?;
-    if bytes.len() > 8 {
-        return Err(format!(
-            "invalid base58 SVID: decoded {} bytes, expected <= 8",
-            bytes.len()
-        ));
-    }
+    let trimmed: &[u8] = if bytes.len() > 8 {
+        let excess = bytes.len() - 8;
+        if bytes[..excess].iter().all(|&b| b == 0) {
+            &bytes[excess..]
+        } else {
+            return Err(format!(
+                "invalid base58 SVID: decoded {} bytes, expected <= 8",
+                bytes.len()
+            ));
+        }
+    } else {
+        &bytes
+    };
     let mut arr = [0u8; 8];
-    arr[8 - bytes.len()..].copy_from_slice(&bytes);
+    arr[8 - trimmed.len()..].copy_from_slice(trimmed);
     Ok(i64::from_be_bytes(arr))
 }
 

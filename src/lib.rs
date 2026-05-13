@@ -3,21 +3,30 @@
 //! A WASM-compatible, 64-bit ID generation module designed for unified
 //! server and client (WASM) usage.
 //!
-//! ## Bit Layout
+//! ## Bit Layout (default `bits-balanced` profile)
 //!
 //! ```text
-//!  63 62              32 31 30      24 23                             0
-//! ┌──┬──────────────────┬──┬──────────┬────────────────────────────────┐
-//! │S0│    TIMESTAMP     │W │ ID TYPE  │            RANDOM              │
-//! │1b│     31 bits      │1b│  7 bits  │            24 bits             │
-//! └──┴──────────────────┴──┴──────────┴────────────────────────────────┘
+//!  63 62                   34 33                            8 7  6     0
+//! ┌──┬──────────────────────┬───────────────────────────────┬──┬────────┐
+//! │S0│    TIMESTAMP (T)     │         RANDOM (M)            │W │  TAG  │
+//! │1b│     29 bits          │         26 bits               │1b│ 7 bits│
+//! └──┴──────────────────────┴───────────────────────────────┴──┴────────┘
 //! ```
 //!
 //! - **Sign bit (63)**: Always 0 (ensures positive i64).
-//! - **Timestamp (32-62)**: 31 bits, seconds since 2026-01-01 (~68 years).
-//! - **WASM/Source bit (31)**: 1 = Client/WASM, 0 = Server.
-//! - **ID Type (24-30)**: 7 bits (0-127) for domain-specific entity types.
-//! - **Random (0-23)**: 24 bits cryptographic randomness (~16.7M unique per second).
+//! - **Timestamp**: T bits, seconds since 2026-01-01. Sits at the top so
+//!   i64 ordering matches chronological order (like ULID/Snowflake/UUIDv7).
+//! - **Random**: M bits of cryptographic randomness. T + M = 55.
+//! - **WASM/Source bit (7)**: 1 = Client/WASM, 0 = Server.
+//! - **TAG (0-6)**: 7 bits (0-127) for domain-specific entity types.
+//!   Always at the LSB so `id & 0x7F` extracts the tag in any profile.
+//!
+//! ## Profile selection (Cargo features)
+//!
+//! Enable exactly one:
+//! - `bits-long-life`: T=31 (68 yr), M=24 — original timestamp range
+//! - `bits-balanced` (default): T=29 (17 yr), M=26 — recommended
+//! - `bits-high-rand`: T=28 (8.5 yr), M=27 — short-lived high-rate apps
 
 pub mod generator;
 pub mod type_bits;
@@ -27,10 +36,10 @@ pub mod wasm;
 
 pub use generator::{GenerateId, IdGenerator, SvidKind};
 pub use type_bits::{
-    decode_i64_base58, encode_svid, id_to_human_readable, human_readable_to_id,
-    human_readable_to_id_expecting, SvidExt, HUMAN_READABLE_LEN, IDTYPE_BITS, IDTYPE_MASK,
-    IDTYPE_SHIFT, RANDOM_BITS, RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH,
-    TIMESTAMP_BITS, TIMESTAMP_MASK, TIMESTAMP_SHIFT,
+    decode_i64_base58, encode_svid, human_readable_to_id, human_readable_to_id_expecting,
+    id_to_human_readable, SvidExt, HUMAN_READABLE_LEN, IDTYPE_BITS, IDTYPE_MASK, IDTYPE_SHIFT,
+    RANDOM_BITS, RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH, TIMESTAMP_BITS,
+    TIMESTAMP_MASK, TIMESTAMP_SHIFT,
 };
 
 pub use svid_macros::{bridge, Svid, SvidDomain};
@@ -78,7 +87,7 @@ impl SvidGenerator {
             id_type
         );
         let timestamp = Self::get_timestamp();
-        let random = Self::get_random_24();
+        let random = Self::get_random();
         encode_svid(timestamp, is_client, id_type, random)
     }
 
@@ -99,8 +108,8 @@ impl SvidGenerator {
         }
     }
 
-    fn get_random_24() -> u32 {
+    fn get_random() -> u32 {
         use rand::Rng;
-        rand::thread_rng().gen::<u32>() & 0xFFFFFF
+        rand::thread_rng().gen::<u32>() & (RANDOM_MASK as u32)
     }
 }

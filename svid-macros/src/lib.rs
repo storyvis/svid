@@ -328,12 +328,10 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
     };
 
     let (error_label, tag_enum_override) = parse_svid_domain_attrs(&input.attrs)?;
-    let tag_enum =
-        tag_enum_override.unwrap_or_else(|| Ident::new("SvidTag", Span::call_site()));
+    let tag_enum = tag_enum_override.unwrap_or_else(|| Ident::new("SvidTag", Span::call_site()));
 
     let mut variants_info: Vec<(Ident, Ident)> = Vec::with_capacity(data.variants.len());
-    let mut seen_inner: std::collections::HashMap<String, Ident> =
-        std::collections::HashMap::new();
+    let mut seen_inner: std::collections::HashMap<String, Ident> = std::collections::HashMap::new();
     for v in &data.variants {
         let inner = extract_single_ident_field(&v.fields)?;
         if let Some(prev) = seen_inner.get(&inner.to_string()) {

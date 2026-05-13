@@ -27,16 +27,24 @@ pub enum AnyId {
 }
 
 impl From<UserId> for AnyId {
-    fn from(id: UserId) -> Self { AnyId::UserId(id) }
+    fn from(id: UserId) -> Self {
+        AnyId::UserId(id)
+    }
 }
 impl From<GroupId> for AnyId {
-    fn from(id: GroupId) -> Self { AnyId::GroupId(id) }
+    fn from(id: GroupId) -> Self {
+        AnyId::GroupId(id)
+    }
 }
 impl From<FolderId> for AnyId {
-    fn from(id: FolderId) -> Self { AnyId::FolderId(id) }
+    fn from(id: FolderId) -> Self {
+        AnyId::FolderId(id)
+    }
 }
 impl From<SharedFolderId> for AnyId {
-    fn from(id: SharedFolderId) -> Self { AnyId::SharedFolderId(id) }
+    fn from(id: SharedFolderId) -> Self {
+        AnyId::SharedFolderId(id)
+    }
 }
 
 svid::bridge!(FolderEnum -> AnyId {
@@ -132,6 +140,36 @@ fn extract_tag_from_i64() {
 }
 
 #[test]
+fn bit_layout_sums_to_64() {
+    let total = 1u32
+        + svid::TIMESTAMP_BITS as u32
+        + svid::RANDOM_BITS as u32
+        + svid::SOURCE_BITS as u32
+        + svid::IDTYPE_BITS as u32;
+    assert_eq!(total, 64, "active profile must sum to 64 bits including sign");
+}
+
+#[test]
+fn tag_is_bit_stable_at_lsb() {
+    // Tag extraction must be `id & 0x7F` regardless of compile-time profile —
+    // downstream SQL / JS code depends on this property.
+    use svid::SvidExt;
+    let id = svid::SvidGenerator::generate(5, false);
+    assert_eq!(id.tag(), 5);
+    assert_eq!((id & 0x7F) as u8, 5);
+}
+
+#[test]
+fn chronological_sort_preserved() {
+    // i64 ordering must match timestamp ordering — required for DB B-tree
+    // efficiency (the ULID / Snowflake / UUIDv7 property).
+    let max_rand = svid::RANDOM_MASK as u32;
+    let early = svid::encode_svid(100, false, 1, max_rand);
+    let late = svid::encode_svid(200, false, 1, 0);
+    assert!(early < late, "i64 ordering must match timestamp ordering");
+}
+
+#[test]
 fn decode_i64_base58_roundtrips_through_helper() {
     let reg = IdRegistry::new(false);
     let u: UserId = reg.user_id.generate_id();
@@ -210,6 +248,10 @@ mod autosurgeon_smoke {
         reconcile(&mut am, &Wrapper { value: bogus }).expect("reconcile");
         let err = hydrate::<_, WrapperOut>(&am).unwrap_err();
         let msg = format!("{}", err);
-        assert!(msg.contains("FolderEnum") || msg.contains("folder"), "{}", msg);
+        assert!(
+            msg.contains("FolderEnum") || msg.contains("folder"),
+            "{}",
+            msg
+        );
     }
 }

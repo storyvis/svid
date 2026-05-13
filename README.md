@@ -16,26 +16,62 @@
 
 ## Bit Layout
 
+Default profile (`bits-balanced`):
+
 ```text
- 63 62              32 31 30      24 23                             0
-┌──┬──────────────────┬──┬──────────┬────────────────────────────────┐
-│S0│    TIMESTAMP     │W │ ID TYPE  │            RANDOM              │
-│1b│     31 bits      │1b│  7 bits  │            24 bits             │
-└──┴──────────────────┴──┴──────────┴────────────────────────────────┘
+ 63 62                   34 33                            8 7  6     0
+┌──┬──────────────────────┬───────────────────────────────┬──┬────────┐
+│S0│    TIMESTAMP (T)     │         RANDOM (M)            │W │  TAG  │
+│1b│      29 bits         │         26 bits               │1b│ 7 bits│
+└──┴──────────────────────┴───────────────────────────────┴──┴────────┘
+        T + M = 55 (the timestamp/random tradeoff is set by a Cargo feature)
 ```
 
-- **Sign (63):** always `0`.
-- **Timestamp (32–62):** seconds since `2026-01-01 UTC` (`SVID_EPOCH`).
-- **Source (31):** `0` = server, `1` = client/WASM.
-- **ID Type (24–30):** 7-bit entity tag (0–127).
-- **Random (0–23):** 24 bits of CSPRNG output.
+- **Sign (63):** always `0` (keeps `i64` positive).
+- **Timestamp:** seconds since `2026-01-01 UTC` (`SVID_EPOCH`). Sits at the top so `ORDER BY id` matches chronological order — the property that makes the format B-tree friendly, same as ULID / Snowflake / UUIDv7.
+- **Random:** CSPRNG output (`rand::thread_rng()` = ChaCha12).
+- **Source (7):** `0` = server, `1` = client/WASM.
+- **Tag (0–6):** 7-bit entity tag (0–127). Anchored at the LSB across **every** profile, so raw bit-ops like `id & 0x7F` stay stable when the bit budget is reallocated. Downstream SQL / JS code that extracts the tag never has to change when you switch profiles.
+
+### Bit-layout profiles (compile-time)
+
+The timestamp/random trade-off is selected at compile time via Cargo features. Exactly one must be enabled.
+
+| Feature                      | Timestamp | Range from 2026         | Random | 50% collision at | When to use                                  |
+|------------------------------|-----------|-------------------------|--------|------------------|----------------------------------------------|
+| `bits-long-life`             | 31 bits   | ~68 years (until 2094)  | 24     | ~4.8K IDs/sec    | Archival / long-lived data, low ID rate      |
+| **`bits-balanced` (default)**| **29 bits** | **~17 years (until 2043)** | **26** | **~9.6K IDs/sec** | **Recommended for most apps**             |
+| `bits-high-rand`             | 28 bits   | ~8.5 years (until 2034) | 27     | ~13.6K IDs/sec   | Short-lived data, high generation rate       |
+
+Override the default:
+
+```toml
+[dependencies]
+svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
+```
+
+The field order is fixed across profiles: only the timestamp and random bit-widths trade against each other. Other field positions (sign, source, tag) are stable — see the diagram above.
+
+### Picking a profile
+
+The collision rate is purely a function of the random bits — RNG quality isn't the bottleneck, the bit budget is. Approximate 50%-collision threshold is `√(2 · 2^M · ln 2)`:
+
+| M (random bits) | 50% collision threshold | At 100K IDs/sec, expected collisions |
+|-----------------|-------------------------|--------------------------------------|
+| 24              | ~4.8K                   | ~287                                 |
+| 26              | ~9.6K                   | ~75                                  |
+| 27              | ~13.6K                  | ~37                                  |
+
+If you need fully collision-free generation above ~10K IDs/sec, 64-bit isn't enough — you'd need a 128-bit format (ULID / UUIDv7). For most apps, `bits-balanced` is the right point on the curve.
 
 ## Install
 
 ```toml
 [dependencies]
-svid = "0.1"
+svid = "0.3"
 # optional: features = ["serde", "diesel", "ts"]
+# pick a different bit-layout profile (default is "bits-balanced"):
+# svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
 ```
 
 ## Quick Start
@@ -145,7 +181,7 @@ The derives emit `#[cfg(feature = "…")]` impls that resolve against **your cra
 
 ```toml
 [dependencies]
-svid   = { version = "0.1", features = ["diesel"] }
+svid   = { version = "0.3", features = ["diesel"] }
 diesel = { version = "2", features = ["postgres"] }
 
 [features]
@@ -195,7 +231,7 @@ extractTag(id);                  // 1
 extractIsClient(id);             // true
 extractUnixTimestamp(id);        // bigint, seconds since unix epoch
 extractTimestampBits(id);        // number, seconds since SVID_EPOCH
-extractRandomBits(id);           // number, 24-bit random
+extractRandomBits(id);           // number, profile-dependent random width
 svidEpoch();                     // 1767225600n
 decodeBase58(b) === id;          // true
 ```
@@ -209,11 +245,11 @@ decodeBase58(b) === id;          // true
 
 ## Limitations
 
-- **Epoch:** 31-bit seconds + 2026 epoch ⇒ wraps in **January 2094**.
+- **Epoch:** depends on the selected profile — `bits-long-life` wraps in **2094**, `bits-balanced` (default) in **2043**, `bits-high-rand` in **2034**.
 - **Tags:** 7 bits ⇒ max **128** entity types.
-- **Collisions:** 24-bit random ⇒ 50% birthday-bound at ~**5,100 IDs/sec/tag**. Plan retries above that.
+- **Collisions:** random width is profile-dependent (24–27 bits). At the default 26 bits, 50% birthday-bound is ~**9,600 IDs/sec/tag**; plan retries above that. For higher rates, switch to `bits-high-rand` or move to a 128-bit format.
 - **Source bit:** 1 bit only (server vs client).
-- **No reserved bits** — format changes are breaking.
+- **No reserved bits** — format changes are breaking. Switching profiles is also a wire-format change; pick once per deployment.
 
 
 ## Citation
@@ -227,7 +263,7 @@ If you use `svid` in academic or technical work, please cite it:
   year    = {2026},
   url     = {https://github.com/storyvis/svid},
   license = {Apache-2.0},
-  version = {0.1.0}
+  version = {0.3.0}
 }
 ```
 
