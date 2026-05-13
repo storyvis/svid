@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "svid-macros"]
+
 [package]
 name = "svid"
 version = "0.1.0"
@@ -19,7 +22,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rand = "0.8"
 bs58 = "0.5"
-paste = "1"
+svid-macros = { path = "svid-macros", version = "0.1.0" }
 serde = { version = "1", features = ["derive"], optional = true }
 diesel = { version = "2", features = ["postgres"], optional = true }
 ts-rs = { version = "10", optional = true }

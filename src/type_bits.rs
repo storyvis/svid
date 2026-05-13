@@ -112,7 +112,17 @@ pub fn human_readable_to_id(s: &str) -> Result<i64, String> {
 }
 
 /// Decode a human-readable SVID and verify it carries the expected tag.
+///
+/// Enforces the fixed `HUMAN_READABLE_LEN`-character format. Use
+/// [`decode_i64_base58`] for variable-length base58 inputs.
 pub fn human_readable_to_id_expecting(s: &str, expected_tag: u8) -> Result<i64, String> {
+    if s.len() != HUMAN_READABLE_LEN {
+        return Err(format!(
+            "Invalid human-readable SVID: expected {} chars, got {}",
+            HUMAN_READABLE_LEN,
+            s.len()
+        ));
+    }
     let id = human_readable_to_id(s)?;
     let got = id.tag();
     if got != expected_tag {

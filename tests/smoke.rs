@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
+#[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
+#[svid(registry = IdRegistry)]
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SvidTag {
     UserId = 1,
     GroupId = 2,
@@ -9,19 +10,12 @@ pub enum SvidTag {
     SharedFolderId = 4,
 }
 
-svid::define_id!(UserId);
-svid::define_id!(GroupId);
-svid::define_id!(FolderId);
-svid::define_id!(SharedFolderId);
-
-svid::define_id_registry!(IdRegistry { UserId, GroupId, FolderId, SharedFolderId });
-
-svid::define_domain_enum! {
-    /// Folder-shaped IDs.
-    FolderEnum, "folder" {
-        Folder(FolderId),
-        Shared(SharedFolderId),
-    }
+/// Folder-shaped IDs.
+#[derive(svid::SvidDomain, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[svid(error_label = "folder")]
+pub enum FolderEnum {
+    Folder(FolderId),
+    Shared(SharedFolderId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,7 +39,7 @@ impl From<SharedFolderId> for AnyId {
     fn from(id: SharedFolderId) -> Self { AnyId::SharedFolderId(id) }
 }
 
-svid::define_enum_bridge!(FolderEnum -> AnyId {
+svid::bridge!(FolderEnum -> AnyId {
     Folder(FolderId),
     Shared(SharedFolderId),
 });
@@ -121,6 +115,16 @@ fn domain_enum_rejects_unknown_tag() {
 }
 
 #[test]
+fn registry_infers_id_type_from_binding() {
+    use svid::SvidExt;
+    let reg = IdRegistry::new(false);
+    let u: UserId = reg.generate_id();
+    let g: GroupId = reg.generate_id();
+    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u8);
+    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u8);
+}
+
+#[test]
 fn extract_tag_from_i64() {
     use svid::SvidExt;
     let id = svid::SvidGenerator::generate(SvidTag::UserId as u8, false);
@@ -134,6 +138,16 @@ fn decode_i64_base58_roundtrips_through_helper() {
     let encoded = u.to_base58();
     let raw = svid::decode_i64_base58(&encoded).expect("helper decode");
     assert_eq!(raw, u.to_i64());
+}
+
+#[test]
+fn from_str_id_rejects_wrong_length() {
+    let err = UserId::from_str_id("xy").unwrap_err();
+    assert!(
+        err.contains("expected") && err.contains("chars"),
+        "unexpected error: {}",
+        err
+    );
 }
 
 #[test]

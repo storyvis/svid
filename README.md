@@ -1,8 +1,18 @@
 # svid (Stateless Verifiable IDs)
 
-> 64-bit domain-typed, stateless, verifiable IDs for native and WASM.
+64-bit domain-typed, stateless, verifiable IDs for native and WASM.
 
 `svid` generates `i64` IDs that are chronologically sortable, carry a 7-bit entity tag, and need zero coordination between processes.
+
+## Why SVID?
+
+- **Compact PK** — 64-bit `i64` fits in 8 bytes per row; half the on-disk footprint of a UUID and the natural width for `BIGINT` columns and JS `bigint`.
+- **B-tree friendly** — high bits are a monotonic timestamp, so recent inserts cluster at the right edge of the index instead of scattering across the tree the way UUIDv4 does. Reduces page splits and index bloat.
+- **Type info travels with the ID** — the 7-bit entity tag lets any service, log line, queue payload, or DB row dispatch on entity kind without a side-table lookup or external schema.
+- **Compile-time type safety** — `#[derive(Svid)]` mints distinct newtypes (`UserId`, `GroupId`, …); the Rust compiler refuses to swap them. Parse-time tag mismatches return typed errors instead of corrupting data silently.
+- **Chronologically sortable** — `ORDER BY id` is `ORDER BY creation_time` to one-second resolution, often eliminating the need for a separate `created_at` column.
+- **Stateless and coordination-free** — server and WASM clients mint IDs locally; the 1-bit source field disambiguates origin without a central allocator.
+- **Format-stable** — positive `i64` round-trips losslessly through PostgreSQL `BIGINT`, JSON strings, JS `bigint`, and the base58 wire forms; same bytes, all the way down.
 
 ## Bit Layout
 
@@ -33,24 +43,26 @@ svid = "0.1"
 ```rust
 use std::str::FromStr;
 
+#[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
+#[svid(registry = IdRegistry)]
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SvidTag { UserId = 1, GroupId = 2 }
 
-svid::define_id!(UserId);
-svid::define_id!(GroupId);
-svid::define_id_registry!(IdRegistry { UserId, GroupId });
-
 let reg = IdRegistry::new(/* is_client = */ false);
-let u: UserId = reg.user_id.generate_id();
-let g: GroupId = reg.group_id.generate_id();
+
+// Type-inferred — variant picked from the binding type.
+let u: UserId  = reg.generate_id();
+let g: GroupId = reg.generate_id();
+
+// Or address the typed generator directly:
+let u2: UserId = reg.user_id.generate_id();
 
 // Tag is checked on parse.
 assert_eq!(UserId::from_str(&u.to_string()).unwrap(), u);
 assert!(UserId::from_str(&g.to_string()).is_err());
 ```
 
-The `SvidTag` enum must be in scope at every `define_id!` site, must be `#[repr(u8)]`, and variant names must match newtype names exactly. Tag values are embedded in persisted IDs — never reuse them.
+`#[derive(svid::Svid)]` emits one newtype (`UserId`, `GroupId`, …) and one marker type per variant alongside the enum. Variants must be unit variants with explicit `= N` discriminants in the 0–127 range — those values get persisted inside every ID and **must not be reused or renumbered** later. The `#[svid(registry = ...)]` helper is optional; omit it to skip generating the registry struct.
 
 ## Encoding
 
@@ -74,20 +86,20 @@ let _: UserId = u.to_string().parse()?;
 Group related IDs into one type:
 
 ```rust
-svid::define_domain_enum! {
-    FolderEnum, "folder" {
-        Folder(FolderId),
-        Shared(SharedFolderId),
-    }
+#[derive(svid::SvidDomain, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[svid(error_label = "folder")]
+pub enum FolderEnum {
+    Folder(FolderId),
+    Shared(SharedFolderId),
 }
 
-let f: FolderId = reg.folder_id.generate_id();
+let f: FolderId = reg.generate_id();
 let any: FolderEnum = f.into();
 let _: FolderEnum = FolderEnum::from_i64(f.to_i64())?;
-let _: FolderId = f.try_into()?;            // recover inner newtype
+let _: FolderId = any.try_into()?;          // recover inner newtype
 ```
 
-`from_i64` rejects IDs whose tag isn't in the domain.
+Variants must be single-field tuple variants whose inner type is a bare ident matching a `SvidTag` variant (e.g. `Folder(FolderId)` pairs with `SvidTag::FolderId`). `error_label` is interpolated into the error message returned by `from_i64` when the tag doesn't match any variant. If your tag enum isn't named `SvidTag`, add `#[svid(tag = MyTag)]` to point the derive at it.
 
 ## Bridging to a Wider Enum
 
@@ -98,12 +110,13 @@ impl From<UserId>         for AnyId { fn from(x: UserId)         -> Self { Self:
 impl From<FolderId>       for AnyId { fn from(x: FolderId)       -> Self { Self::FolderId(x) } }
 impl From<SharedFolderId> for AnyId { fn from(x: SharedFolderId) -> Self { Self::SharedFolderId(x) } }
 
-svid::define_enum_bridge!(FolderEnum -> AnyId {
+svid::bridge!(FolderEnum -> AnyId {
     Folder(FolderId),
     Shared(SharedFolderId),
 });
 
-let any: AnyId = FolderEnum::Folder(f).into();
+let f: FolderId = reg.generate_id();
+let any: AnyId  = FolderEnum::Folder(f).into();
 ```
 
 ## Inspecting Raw IDs
@@ -128,7 +141,7 @@ let dec = svid::DecomposedSvid::from_i64(id);
 | `diesel` | `ToSql` / `FromSql` for `BigInt` on Postgres |
 | `ts`     | `#[derive(TS)]` for ts-rs TypeScript export |
 
-The macros emit `#[cfg(feature = "…")]` impls that resolve against **your crate's** features — mirror them in your `Cargo.toml`:
+The derives emit `#[cfg(feature = "…")]` impls that resolve against **your crate's** features — mirror them in your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -178,9 +191,13 @@ console.assert(back === id);
 const d = decodeSvid(id);
 // { timestamp: number, isClient: true, idType: 1, random: number, unixTimestamp: bigint }
 
-extractTag(id);          // 1
-svidEpoch();             // 1767225600n
-decodeBase58(b) === id;  // true
+extractTag(id);                  // 1
+extractIsClient(id);             // true
+extractUnixTimestamp(id);        // bigint, seconds since unix epoch
+extractTimestampBits(id);        // number, seconds since SVID_EPOCH
+extractRandomBits(id);           // number, 24-bit random
+svidEpoch();                     // 1767225600n
+decodeBase58(b) === id;          // true
 ```
 
 
@@ -188,7 +205,7 @@ decodeBase58(b) === id;  // true
 
 - Time uses `js_sys::Date::now()`; randomness uses `getrandom`'s `js` backend.
 - `generateSvid` always sets `isClient = true` (the WASM build runs in the client). To mint server-source IDs from JS, use the low-level `encodeSvid` packer.
-- `IdRegistry` and the strongly-typed newtype macros are Rust-only — JS works with raw `bigint`s plus the `extract*` helpers for tag-based dispatch.
+- `IdRegistry` and the strongly-typed newtype derives are Rust-only — JS works with raw `bigint`s plus the `extract*` helpers for tag-based dispatch.
 
 ## Limitations
 
@@ -197,3 +214,22 @@ decodeBase58(b) === id;  // true
 - **Collisions:** 24-bit random ⇒ 50% birthday-bound at ~**5,100 IDs/sec/tag**. Plan retries above that.
 - **Source bit:** 1 bit only (server vs client).
 - **No reserved bits** — format changes are breaking.
+
+
+## Citation
+
+If you use `svid` in academic or technical work, please cite it:
+
+```bibtex
+@software{svid_2026,
+  author  = {Bokam, Lava},
+  title   = {{svid}: Stateless Verifiable IDs},
+  year    = {2026},
+  url     = {https://github.com/storyvis/svid},
+  license = {Apache-2.0},
+  version = {0.1.0}
+}
+```
+
+GitHub renders a *Cite this repository* button from [CITATION.cff](CITATION.cff).
+
