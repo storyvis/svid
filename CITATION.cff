@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "svid: Stateless Verifiable IDs"
-version: "0.3.0"
+version: "0.4.0"
 date-released: "2026-05-14"
 license: Apache-2.0
 repository-code: "https://github.com/storyvis/svid"

@@ -1,0 +1,13 @@
+{
+  "name": "svid-node-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build ../.. --target nodejs --out-dir examples/node/pkg",
+    "start": "tsx index.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

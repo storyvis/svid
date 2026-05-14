@@ -66,11 +66,30 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         })
         .collect();
 
+    let reserved_guards: Vec<TokenStream2> = variant_idents
+        .iter()
+        .map(|v| {
+            let msg = format!(
+                "svid: variant `{}::{}` uses tag value {} which is reserved by svid::RANDOM_ID_TAG for SvidGenerator::generate_random()",
+                enum_name, v, 127
+            );
+            quote! {
+                const _: () = {
+                    assert!(
+                        (#enum_name::#v as u8) != ::svid::RANDOM_ID_TAG,
+                        #msg
+                    );
+                };
+            }
+        })
+        .collect();
+
     let registry_block = registry_name
         .map(|reg| quote_registry_block(&reg, &variant_idents))
         .unwrap_or_else(TokenStream2::new);
 
     Ok(quote! {
+        #(#reserved_guards)*
         #(#id_blocks)*
         #registry_block
     })

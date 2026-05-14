@@ -31,7 +31,7 @@ Default profile (`bits-balanced`):
 - **Timestamp:** seconds since `2026-01-01 UTC` (`SVID_EPOCH`). Sits at the top so `ORDER BY id` matches chronological order — the property that makes the format B-tree friendly, same as ULID / Snowflake / UUIDv7.
 - **Random:** CSPRNG output (`rand::thread_rng()` = ChaCha12).
 - **Source (7):** `0` = server, `1` = client/WASM.
-- **Tag (0–6):** 7-bit entity tag (0–127). Anchored at the LSB across **every** profile, so raw bit-ops like `id & 0x7F` stay stable when the bit budget is reallocated. Downstream SQL / JS code that extracts the tag never has to change when you switch profiles.
+- **Tag (0–6):** 7-bit entity tag (0–127). Anchored at the LSB across **every** profile, so raw bit-ops like `id & 0x7F` stay stable when the bit budget is reallocated. Downstream SQL / JS code that extracts the tag never has to change when you switch profiles. Tag value **127** (`svid::RANDOM_ID_TAG`) is reserved for untyped/random IDs minted via `SvidGenerator::generate_random()`; user-defined `#[derive(Svid)]` enums get a compile-time error if they use it.
 
 ### Bit-layout profiles (compile-time)
 
@@ -47,17 +47,17 @@ The timestamp/random trade-off is selected at compile time via Cargo features. E
 
 ```toml
 [dependencies]
-svid = "0.3"
+svid = "0.4"
 # optional: features = ["serde", "diesel", "ts"]
 # pick a different bit-layout profile (default is "bits-balanced"):
-# svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
+# svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
 ```
 
 Override the default:
 
 ```toml
 [dependencies]
-svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
+svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
 ```
 
 The field order is fixed across profiles: only the timestamp and random bit-widths trade against each other. Other field positions (sign, source, tag) are stable — see the diagram above.
@@ -118,6 +118,19 @@ let _: UserId = UserId::from(n);            // unchecked
 // Display / FromStr auto-dispatch by length (11 → str_id, else base58).
 let _: UserId = u.to_string().parse()?;
 ```
+
+## Untyped Random IDs (nanoid / uuidv4 replacement)
+
+When you just need a random ID and don't care about the entity tag, skip the derive entirely:
+
+```rust
+use svid::{SvidGenerator, id_to_human_readable};
+
+let id: i64 = SvidGenerator::generate_random(/* is_client = */ false);
+let s: String = id_to_human_readable(id);   // fixed 11-char base58
+```
+
+These IDs carry `svid::RANDOM_ID_TAG` (`127`) in the tag field, so you can still tell them apart from typed SVIDs after the fact. The remaining bits are exactly the same as any other SVID — chronologically sortable, profile-controlled random width, and source bit.
 
 ## Domain Enums
 
@@ -183,7 +196,7 @@ The derives emit `#[cfg(feature = "…")]` impls that resolve against **your cra
 
 ```toml
 [dependencies]
-svid   = { version = "0.3", features = ["diesel"] }
+svid   = { version = "0.4", features = ["diesel"] }
 diesel = { version = "2", features = ["postgres"] }
 
 [features]
@@ -194,13 +207,23 @@ diesel = ["svid/diesel"]
 
 The crate ships JS/TS bindings built with `wasm-bindgen`. IDs cross the FFI as native `bigint` (no precision loss).
 
-### Build
+A runnable Node.js + TypeScript example lives in [examples/node/](examples/node/).
+
+### Install
 
 ```bash
-npm run build           # wraps: wasm-pack build --target bundler --release
-
+npm install svid
 ```
 
+The published package ships three `wasm-pack` builds (bundler, nodejs, web) routed via conditional `exports`. Zero-config in Node ≥ 20 and any modern bundler (Vite, Webpack 5, Rollup, esbuild, Parcel). For raw `<script type="module">` use the `svid/web` subpath — see below.
+
+### Build from source
+
+```bash
+npm run build           # builds all three targets: pkg/, pkg-node/, pkg-web/
+```
+
+Individual targets: `npm run build:bundler`, `npm run build:node`, `npm run build:web`.
 
 ### Usage
 
@@ -239,16 +262,29 @@ decodeBase58(b) === id;          // true
 ```
 
 
+### Browser without a bundler
+
+```html
+<script type="module">
+  import init, { generateSvid } from "https://esm.sh/svid/web";
+  await init();
+  console.log(generateSvid(1));
+</script>
+```
+
+The `svid/web` subpath ships the `--target web` build, which requires an explicit `await init()` before any other call. The default `import "svid"` path is for Node and bundlers and auto-initializes.
+
 ### Notes
 
 - Time uses `js_sys::Date::now()`; randomness uses `getrandom`'s `js` backend.
 - `generateSvid` always sets `isClient = true` (the WASM build runs in the client). To mint server-source IDs from JS, use the low-level `encodeSvid` packer.
 - `IdRegistry` and the strongly-typed newtype derives are Rust-only — JS works with raw `bigint`s plus the `extract*` helpers for tag-based dispatch.
+- Node ≥ 20 and modern bundlers are zero-config. For raw `<script type="module">`, use the `svid/web` subpath and `await init()`.
 
 ## Limitations
 
 - **Epoch:** depends on the selected profile — `bits-long-life` wraps in **2094**, `bits-balanced` (default) in **2043**, `bits-high-rand` in **2034**.
-- **Tags:** 7 bits ⇒ max **128** entity types.
+- **Tags:** 7 bits ⇒ max **128** entity types, of which **127** is reserved for `RANDOM_ID_TAG` — leaving **127** usable values for `#[derive(Svid)]` enums (`0..=126`).
 - **Collisions:** random width is profile-dependent (24–27 bits). At the default 26 bits, 50% birthday-bound is ~**9,600 IDs/sec/tag**; plan retries above that. For higher rates, switch to `bits-high-rand` or move to a 128-bit format.
 - **Source bit:** 1 bit only (server vs client).
 - **No reserved bits** — format changes are breaking. Switching profiles is also a wire-format change; pick once per deployment.
@@ -265,7 +301,7 @@ If you use `svid` in academic or technical work, please cite it:
   year    = {2026},
   url     = {https://github.com/storyvis/svid},
   license = {Apache-2.0},
-  version = {0.3.0}
+  version = {0.4.0}
 }
 ```
 

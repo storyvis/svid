@@ -1,6 +1,6 @@
 {
   "name": "svid",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Stateless Verifiable ID — 64-bit ID generator (WASM)",
   "license": "Apache-2.0",
   "author": "Lava Bokam <lavajnv@gmail.com>",
@@ -26,20 +26,28 @@
   "exports": {
     ".": {
       "types": "./pkg/svid.d.ts",
-      "import": "./pkg/svid.js",
+      "node": "./pkg-node/svid.js",
+      "browser": "./pkg/svid.js",
       "default": "./pkg/svid.js"
-    }
+    },
+    "./web": {
+      "types": "./pkg-web/svid.d.ts",
+      "default": "./pkg-web/svid.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "pkg"
+    "pkg",
+    "pkg-node",
+    "pkg-web"
   ],
-  "sideEffects": [
-    "./pkg/svid.js",
-    "./pkg/svid_bg.js"
-  ],
+  "sideEffects": false,
   "scripts": {
-    "build": "wasm-pack build --target bundler --release",
-    "build:dev": "wasm-pack build --target bundler --dev",
-    "prepublishOnly": "wasm-pack build --target bundler --release"
+    "build:bundler": "wasm-pack build --target bundler --release --out-dir pkg && rm -f pkg/.gitignore",
+    "build:node": "wasm-pack build --target nodejs --release --out-dir pkg-node && rm -f pkg-node/.gitignore",
+    "build:web": "wasm-pack build --target web --release --out-dir pkg-web && rm -f pkg-web/.gitignore",
+    "build": "npm run build:bundler && npm run build:node && npm run build:web",
+    "build:dev": "wasm-pack build --target bundler --dev --out-dir pkg",
+    "prepublishOnly": "npm run build"
   }
 }

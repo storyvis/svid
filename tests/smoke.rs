@@ -140,6 +140,21 @@ fn extract_tag_from_i64() {
 }
 
 #[test]
+fn generate_random_uses_reserved_tag() {
+    use svid::SvidExt;
+    let id = svid::SvidGenerator::generate_random(false);
+    assert_eq!(id.tag(), svid::RANDOM_ID_TAG);
+    assert_eq!(svid::RANDOM_ID_TAG, 127);
+}
+
+#[test]
+fn generate_random_produces_distinct_ids() {
+    let a = svid::SvidGenerator::generate_random(false);
+    let b = svid::SvidGenerator::generate_random(false);
+    assert_ne!(a, b);
+}
+
+#[test]
 fn bit_layout_sums_to_64() {
     let total = 1u32
         + svid::TIMESTAMP_BITS as u32

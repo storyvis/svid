@@ -20,6 +20,9 @@
 //! - **WASM/Source bit (7)**: 1 = Client/WASM, 0 = Server.
 //! - **TAG (0-6)**: 7 bits (0-127) for domain-specific entity types.
 //!   Always at the LSB so `id & 0x7F` extracts the tag in any profile.
+//!   Value `127` is reserved as [`RANDOM_ID_TAG`] for untyped/random IDs
+//!   minted via [`SvidGenerator::generate_random`] — a nanoid/uuidv4-style
+//!   drop-in. User `#[derive(Svid)]` enums cannot reuse this value.
 //!
 //! ## Profile selection (Cargo features)
 //!
@@ -38,8 +41,8 @@ pub use generator::{GenerateId, IdGenerator, SvidKind};
 pub use type_bits::{
     decode_i64_base58, encode_svid, human_readable_to_id, human_readable_to_id_expecting,
     id_to_human_readable, SvidExt, HUMAN_READABLE_LEN, IDTYPE_BITS, IDTYPE_MASK, IDTYPE_SHIFT,
-    RANDOM_BITS, RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH, TIMESTAMP_BITS,
-    TIMESTAMP_MASK, TIMESTAMP_SHIFT,
+    RANDOM_BITS, RANDOM_ID_TAG, RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH,
+    TIMESTAMP_BITS, TIMESTAMP_MASK, TIMESTAMP_SHIFT,
 };
 
 pub use svid_macros::{bridge, Svid, SvidDomain};
@@ -89,6 +92,14 @@ impl SvidGenerator {
         let timestamp = Self::get_timestamp();
         let random = Self::get_random();
         encode_svid(timestamp, is_client, id_type, random)
+    }
+
+    /// Mints an untyped, random SVID — the drop-in replacement for nanoid /
+    /// uuidv4 when no domain enum is needed. The tag field carries the
+    /// reserved [`RANDOM_ID_TAG`] sentinel so callers can still recognize
+    /// these IDs as untyped.
+    pub fn generate_random(is_client: bool) -> i64 {
+        Self::generate(RANDOM_ID_TAG, is_client)
     }
 
     fn get_timestamp() -> u32 {

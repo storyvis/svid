@@ -58,6 +58,13 @@ pub const IDTYPE_MASK: i64 = (1 << IDTYPE_BITS) - 1;
 pub const RANDOM_MASK: i64 = (1 << RANDOM_BITS) - 1;
 pub const TIMESTAMP_MASK: i64 = (1 << TIMESTAMP_BITS) - 1;
 
+/// Reserved tag value for untyped / random IDs minted via
+/// [`SvidGenerator::generate_random`]. Lets `svid` stand in for nanoid /
+/// uuidv4 when no domain enum is involved. User-defined `#[derive(Svid)]`
+/// enums must not use this value as a discriminant; the derive macro
+/// enforces this at compile time.
+pub const RANDOM_ID_TAG: u8 = 127;
+
 // Field order [sign][ts][rand][src][tag]: tag is LSB, ts is at the top.
 pub const IDTYPE_SHIFT: u8 = 0;
 pub const SOURCE_SHIFT: u8 = IDTYPE_BITS;
