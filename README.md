@@ -43,6 +43,16 @@ The timestamp/random trade-off is selected at compile time via Cargo features. E
 | **`bits-balanced` (default)**| **29 bits** | **~17 years (until 2043)** | **26** | **~9.6K IDs/sec** | **Recommended for most apps**             |
 | `bits-high-rand`             | 28 bits   | ~8.5 years (until 2034) | 27     | ~13.6K IDs/sec   | Short-lived data, high generation rate       |
 
+## Install
+
+```toml
+[dependencies]
+svid = "0.3"
+# optional: features = ["serde", "diesel", "ts"]
+# pick a different bit-layout profile (default is "bits-balanced"):
+# svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
+```
+
 Override the default:
 
 ```toml
@@ -64,15 +74,7 @@ The collision rate is purely a function of the random bits — RNG quality isn't
 
 If you need fully collision-free generation above ~10K IDs/sec, 64-bit isn't enough — you'd need a 128-bit format (ULID / UUIDv7). For most apps, `bits-balanced` is the right point on the curve.
 
-## Install
 
-```toml
-[dependencies]
-svid = "0.3"
-# optional: features = ["serde", "diesel", "ts"]
-# pick a different bit-layout profile (default is "bits-balanced"):
-# svid = { version = "0.3", default-features = false, features = ["bits-high-rand"] }
-```
 
 ## Quick Start
 
