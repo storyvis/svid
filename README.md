@@ -14,6 +14,53 @@
 - **Stateless and coordination-free** — server and WASM clients mint IDs locally; the 1-bit source field disambiguates origin without a central allocator.
 - **Format-stable** — positive `i64` round-trips losslessly through PostgreSQL `BIGINT`, JSON strings, JS `bigint`, and the base58 wire forms; same bytes, all the way down.
 
+## Install
+
+```toml
+[dependencies]
+svid = "0.4"
+# optional: features = ["serde", "diesel", "ts"]
+# pick a different bit-layout profile (default is "bits-balanced"):
+# svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
+```
+
+Override the default:
+
+```toml
+[dependencies]
+svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
+```
+
+The field order is fixed across profiles: only the timestamp and random bit-widths trade against each other. Other field positions (sign, source, tag) are stable — see the diagram above.
+
+
+## Quick Start
+
+```rust
+use std::str::FromStr;
+
+#[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
+#[svid(registry = IdRegistry)]
+#[repr(u8)]
+pub enum SvidTag { UserId = 1, GroupId = 2 }
+
+let reg = IdRegistry::new(/* is_client = */ false);
+
+// Type-inferred — variant picked from the binding type.
+let u: UserId  = reg.generate_id();
+let g: GroupId = reg.generate_id();
+
+// Or address the typed generator directly:
+let u2: UserId = reg.user_id.generate_id();
+
+// Tag is checked on parse.
+assert_eq!(UserId::from_str(&u.to_string()).unwrap(), u);
+assert!(UserId::from_str(&g.to_string()).is_err());
+```
+
+`#[derive(svid::Svid)]` emits one newtype (`UserId`, `GroupId`, …) and one marker type per variant alongside the enum. Variants must be unit variants with explicit `= N` discriminants in the 0–127 range — those values get persisted inside every ID and **must not be reused or renumbered** later. The `#[svid(registry = ...)]` helper is optional; omit it to skip generating the registry struct.
+
+
 ## Bit Layout
 
 Default profile (`bits-balanced`):
@@ -43,24 +90,6 @@ The timestamp/random trade-off is selected at compile time via Cargo features. E
 | **`bits-balanced` (default)**| **29 bits** | **~17 years (until 2043)** | **26** | **~9.6K IDs/sec** | **Recommended for most apps**             |
 | `bits-high-rand`             | 28 bits   | ~8.5 years (until 2034) | 27     | ~13.6K IDs/sec   | Short-lived data, high generation rate       |
 
-## Install
-
-```toml
-[dependencies]
-svid = "0.4"
-# optional: features = ["serde", "diesel", "ts"]
-# pick a different bit-layout profile (default is "bits-balanced"):
-# svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
-```
-
-Override the default:
-
-```toml
-[dependencies]
-svid = { version = "0.4", default-features = false, features = ["bits-high-rand"] }
-```
-
-The field order is fixed across profiles: only the timestamp and random bit-widths trade against each other. Other field positions (sign, source, tag) are stable — see the diagram above.
 
 ### Picking a profile
 
@@ -76,31 +105,6 @@ If you need fully collision-free generation above ~10K IDs/sec, 64-bit isn't eno
 
 
 
-## Quick Start
-
-```rust
-use std::str::FromStr;
-
-#[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
-#[svid(registry = IdRegistry)]
-#[repr(u8)]
-pub enum SvidTag { UserId = 1, GroupId = 2 }
-
-let reg = IdRegistry::new(/* is_client = */ false);
-
-// Type-inferred — variant picked from the binding type.
-let u: UserId  = reg.generate_id();
-let g: GroupId = reg.generate_id();
-
-// Or address the typed generator directly:
-let u2: UserId = reg.user_id.generate_id();
-
-// Tag is checked on parse.
-assert_eq!(UserId::from_str(&u.to_string()).unwrap(), u);
-assert!(UserId::from_str(&g.to_string()).is_err());
-```
-
-`#[derive(svid::Svid)]` emits one newtype (`UserId`, `GroupId`, …) and one marker type per variant alongside the enum. Variants must be unit variants with explicit `= N` discriminants in the 0–127 range — those values get persisted inside every ID and **must not be reused or renumbered** later. The `#[svid(registry = ...)]` helper is optional; omit it to skip generating the registry struct.
 
 ## Encoding
 
