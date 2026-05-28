@@ -51,6 +51,9 @@ pub use svid_macros::{bridge, Svid, SvidDomain};
 #[doc(hidden)]
 pub use bs58;
 
+#[cfg(feature = "strum")]
+pub use strum;
+
 /// Decomposed components of an SVID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecomposedSvid {

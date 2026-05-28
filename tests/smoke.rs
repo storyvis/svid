@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 #[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "strum", derive(svid::strum::Display, svid::strum::EnumString, svid::strum::IntoStaticStr))]
 #[svid(registry = IdRegistry)]
 #[repr(u8)]
 pub enum SvidTag {
@@ -244,6 +245,35 @@ fn sign_bit_set_rejected_by_decode_base58() {
         "expected sign-bit error, got: {}",
         err
     );
+}
+
+#[cfg(feature = "strum")]
+mod strum_smoke {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn display_uses_variant_name() {
+        assert_eq!(SvidTag::UserId.to_string(), "UserId");
+        assert_eq!(SvidTag::FolderId.to_string(), "FolderId");
+    }
+
+    #[test]
+    fn enum_string_roundtrip() {
+        let parsed = SvidTag::from_str("GroupId").expect("from_str");
+        assert_eq!(parsed, SvidTag::GroupId);
+    }
+
+    #[test]
+    fn into_static_str_works() {
+        let s: &'static str = SvidTag::SharedFolderId.into();
+        assert_eq!(s, "SharedFolderId");
+    }
+
+    #[test]
+    fn enum_string_rejects_unknown() {
+        assert!(SvidTag::from_str("Bogus").is_err());
+    }
 }
 
 #[cfg(feature = "autosurgeon")]
