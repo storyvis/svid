@@ -160,7 +160,11 @@ pub fn decode_i64_base58(s: &str) -> Result<i64, String> {
     };
     let mut arr = [0u8; 8];
     arr[8 - trimmed.len()..].copy_from_slice(trimmed);
-    Ok(i64::from_be_bytes(arr))
+    let id = i64::from_be_bytes(arr);
+    if id < 0 {
+        return Err("invalid SVID: sign bit (bit 63) must be 0".to_string());
+    }
+    Ok(id)
 }
 
 /// Decode a human-readable SVID string back to `i64`.

@@ -214,6 +214,38 @@ fn from_base58_rejects_overlong_input_with_unified_message() {
     );
 }
 
+#[test]
+fn sign_bit_set_rejected_by_from_i64() {
+    let reg = IdRegistry::new(false);
+    let f: FolderId = reg.folder_id.generate_id();
+    let positive = f.to_i64();
+    assert!(positive > 0, "generated SVID must be positive");
+
+    let negative = positive | (1i64 << 63);
+    assert!(negative < 0);
+
+    // SvidDomain::from_i64 must reject negative
+    let err = FolderEnum::from_i64(negative).unwrap_err();
+    assert!(
+        err.contains("sign bit"),
+        "expected sign-bit error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn sign_bit_set_rejected_by_decode_base58() {
+    // Encode a negative i64 as base58 and verify decode rejects it
+    let neg: i64 = -1;
+    let encoded = svid::bs58::encode(neg.to_be_bytes()).into_string();
+    let err = svid::decode_i64_base58(&encoded).unwrap_err();
+    assert!(
+        err.contains("sign bit"),
+        "expected sign-bit error, got: {}",
+        err
+    );
+}
+
 #[cfg(feature = "autosurgeon")]
 mod autosurgeon_smoke {
     use super::*;

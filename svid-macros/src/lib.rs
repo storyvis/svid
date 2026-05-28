@@ -405,6 +405,9 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
             }
 
             pub fn from_i64(id: i64) -> ::std::result::Result<Self, String> {
+                if id < 0 {
+                    return Err("invalid SVID: sign bit (bit 63) must be 0".to_string());
+                }
                 use ::svid::SvidExt;
                 let tag = id.tag();
                 #(
