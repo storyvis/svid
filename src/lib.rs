@@ -121,6 +121,6 @@ impl SvidGenerator {
 
     fn get_random() -> u32 {
         use rand::Rng;
-        rand::thread_rng().gen::<u32>() & (RANDOM_MASK as u32)
+        rand::rng().random::<u32>() & (RANDOM_MASK as u32)
     }
 }

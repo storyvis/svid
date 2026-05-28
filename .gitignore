@@ -5,3 +5,4 @@ target/
 /pkg-web
 /node_modules
 *.tgz
+plans/
