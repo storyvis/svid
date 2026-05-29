@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "svid"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "automerge 0.7.4",
  "autosurgeon",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "svid-macros"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "heck",
  "proc-macro2",

@@ -3,7 +3,7 @@ members = [".", "svid-macros"]
 
 [package]
 name = "svid"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 description = "Stateless Verifiable ID — native + WASM 64-bit ID generator"
 license = "Apache-2.0"
@@ -22,7 +22,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rand = "0.9"
 bs58 = "0.5"
-svid-macros = { path = "svid-macros", version = "0.5.2" }
+svid-macros = { path = "svid-macros", version = "0.5.3" }
 serde = { version = "1", features = ["derive"], optional = true }
 strum = { version = "0.27", features = ["derive"], optional = true }
 diesel = { version = "2", features = ["postgres"], optional = true }

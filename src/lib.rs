@@ -127,3 +127,28 @@ impl SvidGenerator {
         rand::rng().random::<u32>() & (RANDOM_MASK as u32)
     }
 }
+
+/// Mint a fresh typed ID. Works on both native and WASM targets.
+///
+/// The source bit is set automatically based on build target:
+/// WASM → client-source (bit 7 = 1), native → server-source (bit 7 = 0).
+///
+/// ```ignore
+/// let id: UserId = svid::mint::<UserIdMarker>();
+/// ```
+#[inline]
+pub fn mint<M>() -> M::Id
+where
+    M: SvidKind,
+    M::Id: From<i64>,
+{
+    let id = SvidGenerator::generate(M::TAG, cfg!(target_arch = "wasm32"));
+    M::Id::from(id)
+}
+
+/// Untyped random ID (tag = 127). Use when no domain tag applies.
+/// Works on both native and WASM targets.
+#[inline]
+pub fn random_id() -> i64 {
+    SvidGenerator::generate_random(cfg!(target_arch = "wasm32"))
+}

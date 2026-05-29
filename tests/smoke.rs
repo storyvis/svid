@@ -247,6 +247,29 @@ fn sign_bit_set_rejected_by_decode_base58() {
     );
 }
 
+#[test]
+fn mint_produces_correct_tag() {
+    use svid::SvidExt;
+    let u: UserId = svid::mint::<UserIdMarker>();
+    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u8);
+    let g: GroupId = svid::mint::<GroupIdMarker>();
+    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u8);
+}
+
+#[test]
+fn mint_produces_distinct_ids() {
+    let a: UserId = svid::mint::<UserIdMarker>();
+    let b: UserId = svid::mint::<UserIdMarker>();
+    assert_ne!(a, b);
+}
+
+#[test]
+fn random_id_uses_reserved_tag() {
+    use svid::SvidExt;
+    let id = svid::random_id();
+    assert_eq!(id.tag(), svid::RANDOM_ID_TAG);
+}
+
 #[cfg(feature = "strum")]
 mod strum_smoke {
     use super::*;
