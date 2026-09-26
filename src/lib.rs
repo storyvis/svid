@@ -37,6 +37,11 @@ pub mod type_bits;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
+/// Serde `with`-helpers to (de)serialize a raw `i64` svid as a base58 string
+/// (JS-precision-safe). See [`serde_i64`]. Requires the `serde` feature.
+#[cfg(feature = "serde")]
+pub mod serde_i64;
+
 pub use generator::{GenerateId, IdGenerator, SvidKind};
 pub use type_bits::{
     decode_i64_base58, encode_svid, human_readable_to_id, human_readable_to_id_expecting,
