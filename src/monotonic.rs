@@ -7,7 +7,8 @@
 //! - same second → previous random + 1;
 //! - random field exhausted within a second → the timestamp borrows the next
 //!   second with a fresh random field (non-blocking; the clock catches up).
-//!   At 26 random bits this needs > 2^26 / 2 ≈ 33M IDs/s/tag on average.
+//!   With the default 19 random bits, each fresh second has about 262K
+//!   remaining values on average; bursts can move logical time ahead.
 //!
 //! Clock clamp: the timestamp never goes below the highest timestamp already
 //! issued by this [`Sequencer`] (any tag), so a backwards `SystemTime` step
@@ -23,7 +24,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 use crate::SvidGenerator;
-use crate::type_bits::{IDTYPE_MASK, RANDOM_MASK, encode_svid};
+use crate::type_bits::{RANDOM_MASK, encode_svid};
 
 #[repr(align(64))]
 struct Slot(AtomicU64);
@@ -59,30 +60,34 @@ impl Sequencer {
 
     /// Next ID for `id_type` using the system clock.
     #[inline]
-    pub fn generate(&self, id_type: u8, is_client: bool) -> i64 {
+    pub fn generate(&self, id_type: u16, is_client: bool) -> i64 {
         self.generate_at(id_type, is_client, SvidGenerator::current_timestamp())
     }
 
     /// Next ID for `id_type` with an explicit clock reading (seconds since
     /// [`SVID_EPOCH`](crate::SVID_EPOCH)).
     #[inline]
-    pub fn generate_at(&self, id_type: u8, is_client: bool, now: u32) -> i64 {
+    pub fn generate_at(&self, id_type: u16, is_client: bool, now: u32) -> i64 {
         self.next_with(id_type, is_client, now, SvidGenerator::random_field)
     }
 
     pub(crate) fn next_with(
         &self,
-        id_type: u8,
+        id_type: u16,
         is_client: bool,
         now: u32,
         mut rng: impl FnMut() -> u32,
     ) -> i64 {
-        debug_assert!(
-            id_type <= 127,
-            "id_type {} exceeds 7-bit range (0..=127)",
+        assert!(
+            id_type <= 4095,
+            "id_type {} exceeds 12-bit range (0..=4095)",
             id_type
         );
-        let tag = id_type & IDTYPE_MASK as u8;
+        assert!(
+            now as i64 <= crate::TIMESTAMP_MASK,
+            "SVID64 timestamp exhausted"
+        );
+        let tag = id_type;
 
         let last = self.last_ts.load(Relaxed);
         let now = if now > last {
@@ -111,6 +116,10 @@ impl Sequencer {
             } else {
                 (lts + 1, rng() & RANDOM_MASK as u32)
             };
+            assert!(
+                ts as i64 <= crate::TIMESTAMP_MASK,
+                "SVID64 timestamp exhausted"
+            );
             match slot.compare_exchange_weak(cur, ((ts as u64) << 32) | r as u64, Relaxed, Relaxed)
             {
                 Ok(_) => {

@@ -56,7 +56,7 @@ fn main() {
         SvidGenerator::generate_monotonic(1, false)
     });
     bench_mt("generate_monotonic x8 distinct tags", 8, |t| {
-        SvidGenerator::generate_monotonic(t as u8, false)
+        SvidGenerator::generate_monotonic(t as u16, false)
     });
     bench("Svid128::generate", |_| {
         black_box(svid::Svid128::generate(black_box(1)));

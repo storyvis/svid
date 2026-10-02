@@ -37,15 +37,16 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         }
     };
 
-    if !has_repr_u8(&input.attrs) {
+    if !has_repr_u16(&input.attrs) {
         return Err(Error::new_spanned(
             &input.ident,
-            "Svid requires `#[repr(u8)]` on the enum so variant discriminants \
-             can be cast to `u8` for the SVID tag field",
+            "Svid requires `#[repr(u16)]` on the enum so variant discriminants \
+             can be cast to `u16` for the SVID tag field",
         ));
     }
 
     let registry_name = parse_registry_attr(&input.attrs)?;
+    let wide = is_wide(&input.attrs)?;
 
     let mut variant_idents = Vec::with_capacity(data.variants.len());
     for v in &data.variants {
@@ -62,7 +63,7 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         .iter()
         .map(|v| {
             let marker = format_ident!("{}Marker", v);
-            quote_id_block(enum_name, v, &marker)
+            quote_id_block(enum_name, v, &marker, wide)
         })
         .collect();
 
@@ -71,12 +72,12 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         .map(|v| {
             let msg = format!(
                 "svid: variant `{}::{}` uses tag value {} which is reserved by svid::RANDOM_ID_TAG for SvidGenerator::generate_random()",
-                enum_name, v, 127
+                enum_name, v, 4095
             );
             quote! {
                 const _: () = {
                     assert!(
-                        (#enum_name::#v as u8) != ::svid::RANDOM_ID_TAG,
+                        (#enum_name::#v as u16) < ::svid::RANDOM_ID_TAG,
                         #msg
                     );
                 };
@@ -85,7 +86,7 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         .collect();
 
     let registry_block = registry_name
-        .map(|reg| quote_registry_block(&reg, &variant_idents))
+        .map(|reg| quote_registry_block(&reg, &variant_idents, wide))
         .unwrap_or_else(TokenStream2::new);
 
     Ok(quote! {
@@ -95,14 +96,14 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
     })
 }
 
-fn has_repr_u8(attrs: &[Attribute]) -> bool {
+fn has_repr_u16(attrs: &[Attribute]) -> bool {
     for attr in attrs {
         if !attr.path().is_ident("repr") {
             continue;
         }
         let mut found = false;
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("u8") {
+            if meta.path.is_ident("u16") {
                 found = true;
             }
             Ok(())
@@ -126,38 +127,90 @@ fn parse_registry_attr(attrs: &[Attribute]) -> Result<Option<Ident>, Error> {
                 let id: Ident = value.parse()?;
                 registry = Some(id);
                 Ok(())
+            } else if meta.path.is_ident("bits") {
+                let _: syn::LitInt = meta.value()?.parse()?;
+                Ok(())
             } else {
-                Err(meta.error("unknown svid attribute; expected `registry = Ident`"))
+                Err(meta
+                    .error("unknown svid attribute; expected `registry = Ident` or `bits = 128`"))
             }
         })?;
     }
     Ok(registry)
 }
 
-fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 {
+fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> TokenStream2 {
+    let encode_name = if wide {
+        format_ident!("to_uuid")
+    } else {
+        format_ident!("to_base58")
+    };
+    let decode_name = if wide {
+        format_ident!("from_uuid")
+    } else {
+        format_ident!("from_base58")
+    };
+    let raw_decoder = if wide {
+        format_ident!("human_readable_to_id")
+    } else {
+        format_ident!("decode_i64_base58")
+    };
+    let raw = if wide {
+        quote!(::svid::Svid128)
+    } else {
+        quote!(i64)
+    };
+    let sql = if wide {
+        quote!(::diesel::sql_types::Uuid)
+    } else {
+        quote!(::diesel::sql_types::BigInt)
+    };
+    let helpers = if wide {
+        quote!(::svid::entity128)
+    } else {
+        quote!(::svid)
+    };
+    let hydrate = if wide {
+        quote! { fn hydrate_string(value: &str) -> Result<Self, ::autosurgeon::HydrateError> {
+            value.parse().map_err(|e: String| ::autosurgeon::HydrateError::unexpected("typed SVID128", e))
+        } }
+    } else {
+        quote! { fn hydrate_int(i: i64) -> Result<Self, ::autosurgeon::HydrateError> { Ok(Self(i)) } }
+    };
+    let narrow_methods = if wide {
+        quote!()
+    } else {
+        quote! {
+            pub fn to_i64(&self) -> i64 { self.0 }
+            pub fn to_hex16(&self) -> String { ::svid::id_to_hex16(self.0) }
+            pub fn encode_hex16_into<'a>(&self, buf: &'a mut [u8; 16]) -> &'a str {
+                ::svid::encode_hex16_into(self.0, buf)
+            }
+        }
+    };
     let qualified_label = format!("{}::{}", enum_name, v);
     quote! {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         #[cfg_attr(feature = "diesel", derive(::diesel::AsExpression, ::diesel::FromSqlRow))]
-        #[cfg_attr(feature = "diesel", diesel(sql_type = ::diesel::sql_types::BigInt))]
+        #[cfg_attr(feature = "diesel", diesel(sql_type = #sql))]
         #[cfg_attr(feature = "ts", derive(::ts_rs::TS))]
         #[cfg_attr(feature = "ts", ts(export))]
         #[repr(transparent)]
-        pub struct #v(pub i64);
+        pub struct #v(#[cfg_attr(feature = "ts", ts(type = "string"))] pub #raw);
 
-        impl ::std::convert::From<i64> for #v {
-            fn from(id: i64) -> Self { Self(id) }
+        impl ::std::convert::From<#raw> for #v {
+            fn from(id: #raw) -> Self { Self(id) }
         }
 
         impl #v {
-            pub fn to_base58(&self) -> String {
-                ::svid::bs58::encode(self.0.to_be_bytes()).into_string()
+            pub fn #encode_name(&self) -> String {
+                #helpers::id_to_human_readable(self.0)
             }
 
-            pub fn from_base58(s: &str) -> ::std::result::Result<Self, String> {
+            pub fn #decode_name(s: &str) -> ::std::result::Result<Self, String> {
                 use ::svid::SvidExt;
-                let id_val = ::svid::decode_i64_base58(s)?;
-                let expected = #enum_name::#v as u8;
+                let id_val = #helpers::#raw_decoder(s)?;
+                let expected = #enum_name::#v as u16;
                 let got = id_val.tag();
                 if got != expected {
                     return Err(format!(
@@ -170,50 +223,42 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
 
             #[inline]
             pub fn to_str(&self) -> String {
-                ::svid::id_to_human_readable(self.0)
+                #helpers::id_to_human_readable(self.0)
             }
 
             #[inline]
             pub fn from_str_id(s: &str) -> ::std::result::Result<Self, String> {
-                ::svid::human_readable_to_id_expecting(s, #enum_name::#v as u8).map(Self)
+                #helpers::human_readable_to_id_expecting(s, #enum_name::#v as u16).map(Self)
             }
 
             #[inline]
-            pub fn to_i64(&self) -> i64 { self.0 }
+            pub fn to_raw(&self) -> #raw { self.0 }
+            #narrow_methods
 
             /// Fixed 11-char base58 (same as `to_str`) into a stack buffer.
             #[inline]
-            pub fn encode_into<'a>(&self, buf: &'a mut [u8; ::svid::HUMAN_READABLE_LEN]) -> &'a str {
-                ::svid::encode_str_into(self.0, buf)
+            pub fn encode_into<'a>(&self, buf: &'a mut [u8; #helpers::HUMAN_READABLE_LEN]) -> &'a str {
+                #helpers::encode_str_into(self.0, buf)
             }
 
-            /// 16 lowercase hex chars (W3C span-id form).
-            #[inline]
-            pub fn to_hex16(&self) -> String {
-                ::svid::id_to_hex16(self.0)
-            }
 
-            #[inline]
-            pub fn encode_hex16_into<'a>(&self, buf: &'a mut [u8; 16]) -> &'a str {
-                ::svid::encode_hex16_into(self.0, buf)
-            }
         }
 
         impl ::std::fmt::Display for #v {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.write_str(self.encode_into(&mut [0u8; ::svid::HUMAN_READABLE_LEN]))
+                f.write_str(self.encode_into(&mut [0u8; #helpers::HUMAN_READABLE_LEN]))
             }
         }
 
-        ::svid::__svid_impl_http!(#v);
+        ::svid::__svid_impl_http_width!(#v, #helpers::HUMAN_READABLE_LEN);
 
         impl ::std::str::FromStr for #v {
             type Err = String;
             fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
-                if s.len() == ::svid::HUMAN_READABLE_LEN {
+                if s.len() == #helpers::HUMAN_READABLE_LEN {
                     Self::from_str_id(s)
                 } else {
-                    Self::from_base58(s)
+                    Self::#decode_name(s)
                 }
             }
         }
@@ -223,7 +268,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
             fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
             where S: ::serde::Serializer
             {
-                serializer.serialize_str(&self.to_str())
+                serializer.serialize_str(self.encode_into(&mut [0u8; #helpers::HUMAN_READABLE_LEN]))
             }
         }
 
@@ -233,16 +278,16 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
             where D: ::serde::Deserializer<'de>
             {
                 let s = <String as ::serde::Deserialize>::deserialize(deserializer)?;
-                if s.len() == ::svid::HUMAN_READABLE_LEN {
+                if s.len() == #helpers::HUMAN_READABLE_LEN {
                     Self::from_str_id(&s).map_err(::serde::de::Error::custom)
                 } else {
-                    Self::from_base58(&s).map_err(::serde::de::Error::custom)
+                    Self::#decode_name(&s).map_err(::serde::de::Error::custom)
                 }
             }
         }
 
         #[cfg(feature = "diesel")]
-        impl ::diesel::serialize::ToSql<::diesel::sql_types::BigInt, ::diesel::pg::Pg> for #v {
+        impl ::diesel::serialize::ToSql<#sql, ::diesel::pg::Pg> for #v {
             fn to_sql<'b>(
                 &'b self,
                 out: &mut ::diesel::serialize::Output<'b, '_, ::diesel::pg::Pg>,
@@ -254,12 +299,12 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
         }
 
         #[cfg(feature = "diesel")]
-        impl ::diesel::deserialize::FromSql<::diesel::sql_types::BigInt, ::diesel::pg::Pg> for #v {
+        impl ::diesel::deserialize::FromSql<#sql, ::diesel::pg::Pg> for #v {
             fn from_sql(
                 bytes: <::diesel::pg::Pg as ::diesel::backend::Backend>::RawValue<'_>,
             ) -> ::diesel::deserialize::Result<Self> {
-                let v = <i64 as ::diesel::deserialize::FromSql<
-                    ::diesel::sql_types::BigInt,
+                let v = <#raw as ::diesel::deserialize::FromSql<
+                    #sql,
                     ::diesel::pg::Pg,
                 >>::from_sql(bytes)?;
                 Ok(Self(v))
@@ -279,11 +324,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
 
         #[cfg(feature = "autosurgeon")]
         impl ::autosurgeon::Hydrate for #v {
-            fn hydrate_int(
-                i: i64,
-            ) -> ::std::result::Result<Self, ::autosurgeon::HydrateError> {
-                Ok(Self(i))
-            }
+            #hydrate
         }
 
         #[derive(Debug, Clone, Copy, Default)]
@@ -291,12 +332,13 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
 
         impl ::svid::SvidKind for #marker {
             type Id = #v;
-            const TAG: u8 = #enum_name::#v as u8;
+            type Raw = #raw;
+            const TAG: u16 = #enum_name::#v as u16;
         }
     }
 }
 
-fn quote_registry_block(registry: &Ident, variants: &[Ident]) -> TokenStream2 {
+fn quote_registry_block(registry: &Ident, variants: &[Ident], wide: bool) -> TokenStream2 {
     let fields: Vec<Ident> = variants
         .iter()
         .map(|v| Ident::new(&v.to_string().to_snake_case(), v.span()))
@@ -305,6 +347,21 @@ fn quote_registry_block(registry: &Ident, variants: &[Ident]) -> TokenStream2 {
         .iter()
         .map(|v| format_ident!("{}Marker", v))
         .collect();
+
+    let monotonic_constructor = if wide {
+        quote! {}
+    } else {
+        quote! {
+                /// Registry whose generators use the process-wide monotonic
+                /// sequencer (collision-free in-process, same ID format).
+                pub fn new_monotonic(is_client: bool) -> Self {
+                    Self {
+                        #( #fields: ::svid::IdGenerator::new_monotonic(is_client), )*
+                    }
+                }
+
+        }
+    };
 
     quote! {
         #[cfg(not(target_arch = "wasm32"))]
@@ -320,13 +377,7 @@ fn quote_registry_block(registry: &Ident, variants: &[Ident]) -> TokenStream2 {
                 }
             }
 
-            /// Registry whose generators use the process-wide monotonic
-            /// sequencer (collision-free in-process, same ID format).
-            pub fn new_monotonic(is_client: bool) -> Self {
-                Self {
-                    #( #fields: ::svid::IdGenerator::new_monotonic(is_client), )*
-                }
-            }
+            #monotonic_constructor
 
             #[inline]
             pub fn generate_id<T>(&self) -> T
@@ -363,6 +414,65 @@ pub fn derive_svid_domain(input: TokenStream) -> TokenStream {
 
 fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
     let enum_name = &input.ident;
+    let wide = is_wide(&input.attrs)?;
+    let encode_name = if wide {
+        format_ident!("to_uuid")
+    } else {
+        format_ident!("to_base58")
+    };
+    let decode_name = if wide {
+        format_ident!("from_uuid")
+    } else {
+        format_ident!("from_base58")
+    };
+    let raw_decoder = if wide {
+        format_ident!("human_readable_to_id")
+    } else {
+        format_ident!("decode_i64_base58")
+    };
+    let raw = if wide {
+        quote!(::svid::Svid128)
+    } else {
+        quote!(i64)
+    };
+    let sql = if wide {
+        quote!(::diesel::sql_types::Uuid)
+    } else {
+        quote!(::diesel::sql_types::BigInt)
+    };
+    let helpers = if wide {
+        quote!(::svid::entity128)
+    } else {
+        quote!(::svid)
+    };
+    let validate = if wide {
+        quote!()
+    } else {
+        quote! {
+            if id < 0 { return Err("invalid SVID: sign bit (bit 63) must be 0".to_string()); }
+        }
+    };
+    let narrow_methods = if wide {
+        quote!()
+    } else {
+        quote! {
+            pub fn to_i64(&self) -> i64 { self.to_raw() }
+            pub fn from_i64(id: i64) -> Result<Self, String> { Self::from_raw(id) }
+        }
+    };
+    let hydrate = if wide {
+        quote! {
+            fn hydrate_string(value: &str) -> Result<Self, ::autosurgeon::HydrateError> {
+                value.parse().map_err(|e: String| ::autosurgeon::HydrateError::unexpected("typed SVID128 domain", e))
+            }
+        }
+    } else {
+        quote! {
+            fn hydrate_int(i: i64) -> Result<Self, ::autosurgeon::HydrateError> {
+                Self::from_raw(i).map_err(|e| ::autosurgeon::HydrateError::unexpected("typed SVID64 domain", e))
+            }
+        }
+    };
     let data = match &input.data {
         Data::Enum(d) => d,
         _ => {
@@ -413,73 +523,72 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
 
     Ok(quote! {
         impl #enum_name {
-            pub fn tag(&self) -> u8 {
+            #narrow_methods
+            pub fn tag(&self) -> u16 {
                 match self {
-                    #( #enum_name::#v1(_) => #tag_enum::#t1 as u8, )*
+                    #( #enum_name::#v1(_) => #tag_enum::#t1 as u16, )*
                 }
             }
 
-            pub fn to_i64(&self) -> i64 {
+            pub fn to_raw(&self) -> #raw {
                 match self {
                     #( #enum_name::#v2(id) => id.0, )*
                 }
             }
 
-            pub fn to_base58(&self) -> String {
+            pub fn #encode_name(&self) -> String {
                 match self {
-                    #( #enum_name::#v3(id) => id.to_base58(), )*
+                    #( #enum_name::#v3(id) => id.#encode_name(), )*
                 }
             }
 
-            pub fn from_i64(id: i64) -> ::std::result::Result<Self, String> {
-                if id < 0 {
-                    return Err("invalid SVID: sign bit (bit 63) must be 0".to_string());
-                }
+            pub fn from_raw(id: #raw) -> ::std::result::Result<Self, String> {
+                #validate
                 use ::svid::SvidExt;
                 let tag = id.tag();
                 #(
-                    if tag == #tag_enum::#t2 as u8 {
+                    if tag == #tag_enum::#t2 as u16 {
                         return Ok(#enum_name::#v4(#t3(id)));
                     }
                 )*
                 Err(format!(concat!("Invalid ", #error_label, " tag: {}"), tag))
             }
 
-            pub fn from_base58(s: &str) -> ::std::result::Result<Self, String> {
-                Self::from_i64(::svid::decode_i64_base58(s)?)
+            pub fn #decode_name(s: &str) -> ::std::result::Result<Self, String> {
+                Self::from_raw(#helpers::#raw_decoder(s)?)
             }
 
             #[inline]
             pub fn to_str(&self) -> String {
-                ::svid::id_to_human_readable(self.to_i64())
+                #helpers::id_to_human_readable(self.to_raw())
             }
 
             #[inline]
-            pub fn encode_into<'a>(&self, buf: &'a mut [u8; ::svid::HUMAN_READABLE_LEN]) -> &'a str {
-                ::svid::encode_str_into(self.to_i64(), buf)
+            pub fn encode_into<'a>(&self, buf: &'a mut [u8; #helpers::HUMAN_READABLE_LEN]) -> &'a str {
+                #helpers::encode_str_into(self.to_raw(), buf)
             }
 
             pub fn from_str_id(s: &str) -> ::std::result::Result<Self, String> {
-                let id_val = ::svid::human_readable_to_id(s)?;
-                Self::from_i64(id_val)
+                let id_val = #helpers::human_readable_to_id(s)?;
+                Self::from_raw(id_val)
             }
         }
 
         impl ::std::fmt::Display for #enum_name {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.write_str(self.encode_into(&mut [0u8; ::svid::HUMAN_READABLE_LEN]))
+                f.write_str(self.encode_into(&mut [0u8; #helpers::HUMAN_READABLE_LEN]))
             }
         }
 
-        ::svid::__svid_impl_http!(#enum_name);
+        ::svid::__svid_impl_http_width!(#enum_name, #helpers::HUMAN_READABLE_LEN);
 
         impl ::std::str::FromStr for #enum_name {
             type Err = String;
             fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
-                if s.len() == ::svid::HUMAN_READABLE_LEN {
+                if s.len() == #helpers::HUMAN_READABLE_LEN {
                     Self::from_str_id(s)
                 } else {
-                    Self::from_base58(s)
+                    Self::#decode_name(s)
                 }
             }
         }
@@ -489,7 +598,7 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
             fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
             where S: ::serde::Serializer
             {
-                serializer.serialize_str(&self.to_str())
+                serializer.serialize_str(self.encode_into(&mut [0u8; #helpers::HUMAN_READABLE_LEN]))
             }
         }
 
@@ -518,7 +627,7 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
                         _ => Err(format!(
                             "Expected tag for {} ({}), got tag {}",
                             stringify!(#t7),
-                            #tag_enum::#inner_types as u8,
+                            #tag_enum::#inner_types as u16,
                             val.tag(),
                         )),
                     }
@@ -526,39 +635,39 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
             }
         )*
 
-        impl ::std::convert::TryFrom<i64> for #enum_name {
+        impl ::std::convert::TryFrom<#raw> for #enum_name {
             type Error = String;
-            fn try_from(id: i64) -> ::std::result::Result<Self, Self::Error> {
-                Self::from_i64(id)
+            fn try_from(id: #raw) -> ::std::result::Result<Self, Self::Error> {
+                Self::from_raw(id)
             }
         }
 
-        impl ::std::convert::From<#enum_name> for i64 {
-            fn from(val: #enum_name) -> Self { val.to_i64() }
+        impl ::std::convert::From<#enum_name> for #raw {
+            fn from(val: #enum_name) -> Self { val.to_raw() }
         }
 
         #[cfg(feature = "diesel")]
-        impl ::diesel::serialize::ToSql<::diesel::sql_types::BigInt, ::diesel::pg::Pg> for #enum_name {
+        impl ::diesel::serialize::ToSql<#sql, ::diesel::pg::Pg> for #enum_name {
             fn to_sql<'b>(
                 &'b self,
                 out: &mut ::diesel::serialize::Output<'b, '_, ::diesel::pg::Pg>,
             ) -> ::diesel::serialize::Result {
                 use ::std::io::Write;
-                out.write_all(&self.to_i64().to_be_bytes())?;
+                out.write_all(&self.to_raw().to_be_bytes())?;
                 Ok(::diesel::serialize::IsNull::No)
             }
         }
 
         #[cfg(feature = "diesel")]
-        impl ::diesel::deserialize::FromSql<::diesel::sql_types::BigInt, ::diesel::pg::Pg> for #enum_name {
+        impl ::diesel::deserialize::FromSql<#sql, ::diesel::pg::Pg> for #enum_name {
             fn from_sql(
                 bytes: <::diesel::pg::Pg as ::diesel::backend::Backend>::RawValue<'_>,
             ) -> ::diesel::deserialize::Result<Self> {
-                let v = <i64 as ::diesel::deserialize::FromSql<
-                    ::diesel::sql_types::BigInt,
+                let v = <#raw as ::diesel::deserialize::FromSql<
+                    #sql,
                     ::diesel::pg::Pg,
                 >>::from_sql(bytes)?;
-                <Self as ::std::convert::TryFrom<i64>>::try_from(v)
+                <Self as ::std::convert::TryFrom<#raw>>::try_from(v)
                     .map_err(|e: String| e.into())
             }
         }
@@ -570,21 +679,13 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
                 &self,
                 reconciler: R,
             ) -> ::std::result::Result<(), R::Error> {
-                self.to_i64().reconcile(reconciler)
+                self.to_raw().reconcile(reconciler)
             }
         }
 
         #[cfg(feature = "autosurgeon")]
         impl ::autosurgeon::Hydrate for #enum_name {
-            fn hydrate_int(
-                i: i64,
-            ) -> ::std::result::Result<Self, ::autosurgeon::HydrateError> {
-                <Self as ::std::convert::TryFrom<i64>>::try_from(i)
-                    .map_err(|e| ::autosurgeon::HydrateError::unexpected(
-                        concat!("valid ", stringify!(#enum_name), " SVID tag"),
-                        e,
-                    ))
-            }
+            #hydrate
         }
     })
 }
@@ -604,6 +705,9 @@ fn parse_svid_domain_attrs(attrs: &[Attribute]) -> Result<(LitStr, Option<Ident>
             } else if meta.path.is_ident("tag") {
                 let value = meta.value()?;
                 tag = Some(value.parse::<Ident>()?);
+                Ok(())
+            } else if meta.path.is_ident("bits") {
+                let _: syn::LitInt = meta.value()?.parse()?;
                 Ok(())
             } else {
                 Err(meta.error(
@@ -688,4 +792,26 @@ pub fn bridge(input: TokenStream) -> TokenStream {
         }
     };
     expanded.into()
+}
+
+fn is_wide(attrs: &[Attribute]) -> Result<bool, Error> {
+    let mut wide = false;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("svid")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("bits") {
+                let bits = meta
+                    .value()?
+                    .parse::<syn::LitInt>()?
+                    .base10_parse::<u16>()?;
+                if bits != 64 && bits != 128 {
+                    return Err(meta.error("bits must be 64 or 128"));
+                }
+                wide = bits == 128;
+            } else {
+                let _: syn::Expr = meta.value()?.parse()?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(wide)
 }

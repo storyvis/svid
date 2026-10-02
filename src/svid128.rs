@@ -1,174 +1,227 @@
-//! 128-bit SVID for distributed tracing (W3C `traceparent` trace-id).
-//!
-//! ```text
-//!  127                 87 86      80 79                                0
-//! ┌─────────────────────┬──────────┬───────────────────────────────────┐
-//! │   MILLIS (41 bits)  │ TAG (7b) │        RANDOM (80 bits, CSPRNG)   │
-//! └─────────────────────┴──────────┴───────────────────────────────────┘
-//! ```
-//!
-//! - **Millis**: milliseconds since [`SVID_EPOCH`] (2026-01-01), 41 bits ≈ 69.7
-//!   years (wraps in 2095). Top of the value, so IDs sort by creation time.
-//! - **Tag**: same 7-bit tag space as the 64-bit SVID.
-//! - **Random**: 80 CSPRNG bits in the low 10 bytes, which satisfies the W3C
-//!   Trace Context Level 2 "random trace-id" requirement (rightmost 7 bytes
-//!   random). 50% collision needs ~1.3 × 10^12 IDs in the same millisecond.
-//! - Never zero (W3C forbids the all-zero trace-id); enforced by
-//!   [`NonZeroU128`].
+//! Durable entity identity: [Unix milliseconds:48][random:67][source:1][type:12].
+//! Metadata occupies the same low bits as SVID64. This is not a trace ID or UUIDv7.
+use crate::{IDTYPE_MASK, RANDOM_ID_TAG, SOURCE_SHIFT};
 
-use std::num::NonZeroU128;
-
-use crate::encoding::{decode_hex_exact, encode_hex16_into, hex_into};
-use crate::type_bits::{IDTYPE_MASK, RANDOM_ID_TAG, SVID_EPOCH};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Svid128(NonZeroU128);
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Svid128(#[cfg_attr(feature = "ts", ts(type = "string"))] u128);
 
 impl Svid128 {
-    pub const MILLIS_BITS: u32 = 41;
-    pub const TAG_BITS: u32 = 7;
-    pub const RANDOM_BITS: u32 = 80;
-    pub const TAG_SHIFT: u32 = Self::RANDOM_BITS;
-    pub const MILLIS_SHIFT: u32 = Self::TAG_SHIFT + Self::TAG_BITS;
-    pub const RANDOM_MASK: u128 = (1 << Self::RANDOM_BITS) - 1;
-    pub const MILLIS_MASK: u64 = (1 << Self::MILLIS_BITS) - 1;
-    /// Length of [`to_hex`](Self::to_hex) output.
+    pub const NIL: Self = Self(0);
+    pub const MILLIS_BITS: u32 = 48;
+    pub const RANDOM_BITS: u32 = 67;
+    pub const RANDOM_SHIFT: u32 = crate::RANDOM_SHIFT as u32;
+    pub const MILLIS_SHIFT: u32 = 80;
+    pub const MILLIS_MASK: u64 = (1u64 << Self::MILLIS_BITS) - 1;
+    pub const RANDOM_MASK: u128 = (1u128 << Self::RANDOM_BITS) - 1;
+    pub const TEXT_LEN: usize = 36;
     pub const HEX_LEN: usize = 32;
 
-    /// Fresh ID with the given tag (0..=127).
-    pub fn generate(tag: u8) -> Self {
-        use rand::Rng;
-        let random = rand::rng().random::<u128>();
-        let v = Self::pack(now_millis(), tag, random);
-        // Only reachable before SVID_EPOCH with tag 0 and 2^-80 luck.
-        Self(NonZeroU128::new(v).unwrap_or(NonZeroU128::MIN))
+    pub fn generate(tag: u16) -> Self {
+        Self::generate_with_source(tag, cfg!(target_arch = "wasm32"))
     }
-
-    /// Untyped trace ID carrying [`RANDOM_ID_TAG`].
     pub fn generate_random() -> Self {
         Self::generate(RANDOM_ID_TAG)
     }
-
-    /// Pack explicit fields. `None` only if every field is zero.
-    pub fn from_parts(millis: u64, tag: u8, random: u128) -> Option<Self> {
-        Self::from_u128(Self::pack(millis, tag, random))
+    pub fn generate_with_source(tag: u16, is_client: bool) -> Self {
+        use rand::Rng;
+        let random = rand::rng().random::<u128>() & Self::RANDOM_MASK;
+        Self::from_parts(now_millis(), is_client, tag, random)
+            .expect("SVID128 timestamp or type out of range")
     }
-
-    #[inline]
-    fn pack(millis: u64, tag: u8, random: u128) -> u128 {
-        ((millis & Self::MILLIS_MASK) as u128) << Self::MILLIS_SHIFT
-            | ((tag as u128) & IDTYPE_MASK as u128) << Self::TAG_SHIFT
-            | (random & Self::RANDOM_MASK)
+    /// Checked packing; rejects every oversized field, including in release builds.
+    pub const fn from_parts(millis: u64, is_client: bool, tag: u16, random: u128) -> Option<Self> {
+        if millis > Self::MILLIS_MASK || tag > IDTYPE_MASK as u16 || random > Self::RANDOM_MASK {
+            return None;
+        }
+        Some(Self(
+            ((millis as u128) << Self::MILLIS_SHIFT)
+                | (random << Self::RANDOM_SHIFT)
+                | ((is_client as u128) << SOURCE_SHIFT)
+                | tag as u128,
+        ))
     }
-
-    #[inline]
-    pub fn from_u128(v: u128) -> Option<Self> {
-        NonZeroU128::new(v).map(Self)
+    pub const fn from_u128(value: u128) -> Self {
+        Self(value)
     }
-
-    #[inline]
-    pub fn as_u128(self) -> u128 {
-        self.0.get()
+    pub const fn as_u128(self) -> u128 {
+        self.0
     }
-
-    /// Milliseconds since [`SVID_EPOCH`].
-    #[inline]
-    pub fn millis(self) -> u64 {
-        (self.as_u128() >> Self::MILLIS_SHIFT) as u64 & Self::MILLIS_MASK
+    pub const fn from_be_bytes(value: [u8; 16]) -> Self {
+        Self(u128::from_be_bytes(value))
     }
-
-    /// Milliseconds since the Unix epoch.
-    #[inline]
-    pub fn unix_millis(self) -> i64 {
-        SVID_EPOCH * 1000 + self.millis() as i64
+    pub const fn to_be_bytes(self) -> [u8; 16] {
+        self.0.to_be_bytes()
     }
-
-    #[inline]
-    pub fn tag(self) -> u8 {
-        (self.as_u128() >> Self::TAG_SHIFT) as u8 & IDTYPE_MASK as u8
+    pub const fn is_nil(self) -> bool {
+        self.0 == 0
     }
-
-    #[inline]
-    pub fn random_bits(self) -> u128 {
-        self.as_u128() & Self::RANDOM_MASK
+    pub const fn tag(self) -> u16 {
+        (self.0 & IDTYPE_MASK as u128) as u16
     }
-
-    /// 32 lowercase hex chars into `buf` (W3C trace-id), no allocation.
-    #[inline]
+    pub const fn is_client(self) -> bool {
+        self.0 & (1 << SOURCE_SHIFT) != 0
+    }
+    pub const fn millis(self) -> u64 {
+        (self.0 >> Self::MILLIS_SHIFT) as u64
+    }
+    pub const fn unix_millis(self) -> i64 {
+        self.millis() as i64
+    }
+    pub const fn random_bits(self) -> u128 {
+        (self.0 >> Self::RANDOM_SHIFT) & Self::RANDOM_MASK
+    }
     pub fn encode_hex_into(self, buf: &mut [u8; 32]) -> &str {
-        hex_into(self.as_u128(), buf)
+        crate::encoding::hex_into(self.0, buf)
     }
-
-    /// 32 lowercase hex chars (W3C trace-id).
     pub fn to_hex(self) -> String {
-        self.encode_hex_into(&mut [0u8; 32]).to_owned()
+        self.encode_hex_into(&mut [0; 32]).to_owned()
     }
-
-    /// Alias of [`to_hex`](Self::to_hex).
-    #[inline]
-    pub fn to_hex32(self) -> String {
-        self.to_hex()
-    }
-
-    /// Parse exactly 32 lowercase hex chars; rejects all-zero.
-    pub fn from_hex(s: &str) -> Result<Self, String> {
-        Self::from_u128(decode_hex_exact(s, Self::HEX_LEN)?)
-            .ok_or_else(|| "invalid Svid128: all-zero trace-id".to_string())
-    }
-
-    /// Full W3C `traceparent` (version 00) into `buf`:
-    /// `00-<trace-id>-<span-id>-<flags>`, e.g. flags `0x01` = sampled.
-    /// `span_id` is a 64-bit SVID; it must be non-zero (any ID minted after
-    /// `SVID_EPOCH` + 1 s is).
-    pub fn encode_traceparent_into(self, span_id: i64, flags: u8, buf: &mut [u8; 55]) -> &str {
-        debug_assert!(span_id != 0, "W3C span-id must not be all-zero");
-        buf[..3].copy_from_slice(b"00-");
-        hex_into::<32>(self.as_u128(), (&mut buf[3..35]).try_into().unwrap());
-        buf[35] = b'-';
-        encode_hex16_into(span_id, (&mut buf[36..52]).try_into().unwrap());
-        buf[52] = b'-';
-        hex_into::<2>(flags as u128, (&mut buf[53..55]).try_into().unwrap());
-        // SAFETY: all 55 bytes were written above from ASCII literals/tables.
+    pub fn encode_into(self, buf: &mut [u8; 36]) -> &str {
+        let mut hex = [0; 32];
+        self.encode_hex_into(&mut hex);
+        let mut j = 0;
+        for (i, out) in buf.iter_mut().enumerate() {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *out = b'-';
+            } else {
+                *out = hex[j];
+                j += 1;
+            }
+        }
+        // SAFETY: every byte comes from the ASCII hex table or a hyphen.
         unsafe { crate::encoding::ascii(buf) }
     }
-}
-
-impl std::fmt::Display for Svid128 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.encode_hex_into(&mut [0u8; 32]))
+    pub fn from_hex(value: &str) -> Result<Self, String> {
+        crate::encoding::decode_hex_exact(value, 32).map(Self)
     }
 }
-
+impl std::fmt::Display for Svid128 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.encode_into(&mut [0; 36]))
+    }
+}
 impl std::str::FromStr for Svid128 {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_hex(s)
+        if s.len() == 32 {
+            return Self::from_hex(s);
+        }
+        if s.len() != 36 {
+            return Err("SVID128 requires 32 hex digits or canonical UUID text".into());
+        }
+        let mut hex = [0; 32];
+        let mut j = 0;
+        for (i, byte) in s.bytes().enumerate() {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                if byte != b'-' {
+                    return Err("invalid SVID128 UUID separator".into());
+                }
+            } else {
+                hex[j] = byte;
+                j += 1;
+            }
+        }
+        Self::from_hex(std::str::from_utf8(&hex).map_err(|e| e.to_string())?)
     }
 }
-
-#[cfg(feature = "http")]
-impl From<Svid128> for http::HeaderValue {
-    fn from(id: Svid128) -> Self {
-        http::HeaderValue::from_bytes(id.encode_hex_into(&mut [0u8; 32]).as_bytes())
-            .expect("hex is visible ASCII")
+#[cfg(feature = "serde")]
+impl serde::Serialize for Svid128 {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.encode_into(&mut [0; 36]))
     }
 }
-
-#[cfg(feature = "http")]
-impl TryFrom<&http::HeaderValue> for Svid128 {
-    type Error = String;
-    fn try_from(h: &http::HeaderValue) -> Result<Self, Self::Error> {
-        Self::from_hex(h.to_str().map_err(|e| e.to_string())?)
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Svid128 {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = Svid128;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a SVID128 UUID string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Svid128, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+        d.deserialize_str(Visitor)
     }
 }
+#[cfg(feature = "diesel")]
+impl diesel::serialize::ToSql<diesel::sql_types::Uuid, diesel::pg::Pg> for Svid128 {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>,
+    ) -> diesel::serialize::Result {
+        use std::io::Write;
+        out.write_all(&self.to_be_bytes())?;
+        Ok(diesel::serialize::IsNull::No)
+    }
+}
+#[cfg(feature = "diesel")]
+impl diesel::deserialize::FromSql<diesel::sql_types::Uuid, diesel::pg::Pg> for Svid128 {
+    fn from_sql(bytes: diesel::pg::PgValue<'_>) -> diesel::deserialize::Result<Self> {
+        Ok(Self::from_be_bytes(bytes.as_bytes().try_into()?))
+    }
+}
+#[cfg(feature = "autosurgeon")]
+impl autosurgeon::Reconcile for Svid128 {
+    type Key<'a> = autosurgeon::reconcile::NoKey;
+    fn reconcile<R: autosurgeon::Reconciler>(&self, mut r: R) -> Result<(), R::Error> {
+        r.str(self.encode_into(&mut [0; 36]))
+    }
+}
+#[cfg(feature = "autosurgeon")]
+impl autosurgeon::Hydrate for Svid128 {
+    fn hydrate_string(value: &str) -> Result<Self, autosurgeon::HydrateError> {
+        value
+            .parse()
+            .map_err(|e: String| autosurgeon::HydrateError::unexpected("SVID128 UUID", e))
+    }
+}
+crate::__svid_impl_http_width!(Svid128, 36);
 
 fn now_millis() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is before UNIX epoch")
-        .as_millis() as i64;
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before Unix epoch")
+            .as_millis()
+            .try_into()
+            .expect("clock overflow")
+    }
     #[cfg(target_arch = "wasm32")]
-    let now = js_sys::Date::now() as i64;
-    (now - SVID_EPOCH * 1000).max(0) as u64
+    {
+        js_sys::Date::now().max(0.0) as u64
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl postgres_types::ToSql for Svid128 {
+    fn to_sql(
+        &self,
+        _: &postgres_types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<postgres_types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        out.extend_from_slice(&self.to_be_bytes());
+        Ok(postgres_types::IsNull::No)
+    }
+    fn accepts(ty: &postgres_types::Type) -> bool {
+        *ty == postgres_types::Type::UUID
+    }
+    postgres_types::to_sql_checked!();
+}
+#[cfg(feature = "postgres")]
+impl<'a> postgres_types::FromSql<'a> for Svid128 {
+    fn from_sql(
+        _: &postgres_types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self::from_be_bytes(raw.try_into()?))
+    }
+    fn accepts(ty: &postgres_types::Type) -> bool {
+        *ty == postgres_types::Type::UUID
+    }
 }

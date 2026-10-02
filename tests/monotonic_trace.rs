@@ -2,13 +2,14 @@ use std::collections::HashSet;
 
 use rand::Rng;
 use svid::{
-    HUMAN_READABLE_LEN, Sequencer, Svid128, SvidExt, SvidGenerator, encode_hex16_into,
-    encode_str_into, hex16_to_id, human_readable_to_id, id_to_hex16, id_to_human_readable,
+    HUMAN_READABLE_LEN, Sequencer, SvidExt, SvidGenerator, TraceId128 as Svid128,
+    encode_hex16_into, encode_str_into, hex16_to_id, human_readable_to_id, id_to_hex16,
+    id_to_human_readable,
 };
 
 #[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
 #[svid(registry = Reg)]
-#[repr(u8)]
+#[repr(u16)]
 pub enum Tag {
     ReqId = 1,
     TurnId = 2,
@@ -103,7 +104,7 @@ fn registry_new_monotonic() {
     let a: ReqId = reg.generate_id();
     let b: ReqId = reg.generate_id();
     assert!(b.to_i64() > a.to_i64());
-    assert_eq!(a.to_i64().tag(), Tag::ReqId as u8);
+    assert_eq!(a.to_i64().tag(), Tag::ReqId as u16);
 }
 
 #[test]
@@ -198,7 +199,7 @@ fn svid128_hex_roundtrip_nonzero_w3c() {
     assert!(Svid128::from_hex(&"0".repeat(32)).is_err());
     assert!(Svid128::from_hex(&"A".repeat(32)).is_err());
     assert!(Svid128::from_u128(0).is_none());
-    let p = Svid128::from_parts(123, 7, u128::MAX).unwrap();
+    let p = Svid128::from_parts(123, 7, Svid128::RANDOM_MASK).unwrap();
     assert_eq!(
         (p.millis(), p.tag(), p.random_bits()),
         (123, 7, Svid128::RANDOM_MASK)
@@ -213,10 +214,13 @@ fn svid128_hex_roundtrip_nonzero_w3c() {
 #[test]
 fn traceparent_format() {
     let t = Svid128::generate(1);
-    let span = SvidGenerator::generate(1, false);
+    let span = svid::SpanId64::generate();
     let mut buf = [0u8; 55];
     let tp = t.encode_traceparent_into(span, 0x01, &mut buf);
-    assert_eq!(tp, format!("00-{}-{}-01", t.to_hex(), id_to_hex16(span)));
+    assert_eq!(
+        tp,
+        format!("00-{}-{}-01", t.to_hex(), id_to_hex16(span.as_u64() as i64))
+    );
 }
 
 #[cfg(feature = "http")]
