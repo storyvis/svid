@@ -37,16 +37,21 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         }
     };
 
-    if !has_repr_u16(&input.attrs) {
+    if !has_repr_tag(&input.attrs) {
         return Err(Error::new_spanned(
             &input.ident,
-            "Svid requires `#[repr(u16)]` on the enum so variant discriminants \
-             can be cast to `u16` for the SVID tag field",
+            "Svid requires `#[repr(u8)]` or `#[repr(u16)]` on the enum so variant \
+             discriminants can be cast to the SVID tag field",
         ));
     }
 
     let registry_name = parse_registry_attr(&input.attrs)?;
     let wide = is_wide(&input.attrs)?;
+    let (reserved, reserved_path, width) = if wide {
+        (4095u16, quote!(::svid::RANDOM_ID_TAG128), 12)
+    } else {
+        (127u16, quote!((::svid::RANDOM_ID_TAG as u16)), 7)
+    };
 
     let mut variant_idents = Vec::with_capacity(data.variants.len());
     for v in &data.variants {
@@ -71,13 +76,13 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
         .iter()
         .map(|v| {
             let msg = format!(
-                "svid: variant `{}::{}` uses tag value {} which is reserved by svid::RANDOM_ID_TAG for SvidGenerator::generate_random()",
-                enum_name, v, 4095
+                "svid: variant `{}::{}` must have a tag below {} ({}-bit tag; {} is reserved for generate_random())",
+                enum_name, v, reserved, width, reserved
             );
             quote! {
                 const _: () = {
                     assert!(
-                        (#enum_name::#v as u16) < ::svid::RANDOM_ID_TAG,
+                        (#enum_name::#v as u16) < #reserved_path,
                         #msg
                     );
                 };
@@ -96,14 +101,14 @@ fn expand_svid(input: DeriveInput) -> Result<TokenStream2, Error> {
     })
 }
 
-fn has_repr_u16(attrs: &[Attribute]) -> bool {
+fn has_repr_tag(attrs: &[Attribute]) -> bool {
     for attr in attrs {
         if !attr.path().is_ident("repr") {
             continue;
         }
         let mut found = false;
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("u16") {
+            if meta.path.is_ident("u8") || meta.path.is_ident("u16") {
                 found = true;
             }
             Ok(())
@@ -188,6 +193,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
             }
         }
     };
+    let tag_ty = if wide { quote!(u16) } else { quote!(u8) };
     let qualified_label = format!("{}::{}", enum_name, v);
     quote! {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,7 +216,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
             pub fn #decode_name(s: &str) -> ::std::result::Result<Self, String> {
                 use ::svid::SvidExt;
                 let id_val = #helpers::#raw_decoder(s)?;
-                let expected = #enum_name::#v as u16;
+                let expected = #enum_name::#v as #tag_ty;
                 let got = id_val.tag();
                 if got != expected {
                     return Err(format!(
@@ -228,7 +234,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
 
             #[inline]
             pub fn from_str_id(s: &str) -> ::std::result::Result<Self, String> {
-                #helpers::human_readable_to_id_expecting(s, #enum_name::#v as u16).map(Self)
+                #helpers::human_readable_to_id_expecting(s, #enum_name::#v as #tag_ty).map(Self)
             }
 
             #[inline]
@@ -415,6 +421,7 @@ pub fn derive_svid_domain(input: TokenStream) -> TokenStream {
 fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
     let enum_name = &input.ident;
     let wide = is_wide(&input.attrs)?;
+    let tag_ty = if wide { quote!(u16) } else { quote!(u8) };
     let encode_name = if wide {
         format_ident!("to_uuid")
     } else {
@@ -524,9 +531,9 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
     Ok(quote! {
         impl #enum_name {
             #narrow_methods
-            pub fn tag(&self) -> u16 {
+            pub fn tag(&self) -> #tag_ty {
                 match self {
-                    #( #enum_name::#v1(_) => #tag_enum::#t1 as u16, )*
+                    #( #enum_name::#v1(_) => #tag_enum::#t1 as #tag_ty, )*
                 }
             }
 
@@ -545,7 +552,7 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
             pub fn from_raw(id: #raw) -> ::std::result::Result<Self, String> {
                 #validate
                 use ::svid::SvidExt;
-                let tag = id.tag();
+                let tag = u16::from(id.tag());
                 #(
                     if tag == #tag_enum::#t2 as u16 {
                         return Ok(#enum_name::#v4(#t3(id)));

@@ -19,9 +19,9 @@ fn main() -> ExitCode {
         return usage(prog, "too many arguments");
     }
 
-    let idtype: u16 = match idtype_arg.parse::<u32>() {
-        Ok(v) if v <= 4095 => v as u16,
-        _ => return usage(prog, "idtype must be an integer in 0..=4095"),
+    let idtype: u8 = match idtype_arg.parse::<u8>() {
+        Ok(v) if v <= 127 => v,
+        _ => return usage(prog, "idtype must be an integer in 0..=127"),
     };
     let count: usize = match count_arg.parse::<usize>() {
         Ok(v) if v > 0 => v,
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
 fn usage(prog: &str, msg: &str) -> ExitCode {
     eprintln!("error: {msg}");
     eprintln!("usage: {prog} <idtype> <count>");
-    eprintln!("  idtype   integer in 0..=4095");
+    eprintln!("  idtype   integer in 0..=127");
     eprintln!("  count    positive integer");
     ExitCode::from(2)
 }

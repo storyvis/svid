@@ -147,6 +147,21 @@ pub(crate) fn decode_hex_exact(s: &str, n: usize) -> Result<u128, String> {
     Ok(v)
 }
 
+/// Case-insensitive hex decode of exactly 32 digits from `s` (UUID text,
+/// RFC 9562 §4).
+#[inline]
+pub(crate) fn decode_hex32_any_case(s: &[u8; 32]) -> Option<u128> {
+    let mut v: u128 = 0;
+    for &c in s {
+        let d = HEX_DECODE[c.to_ascii_lowercase() as usize];
+        if d == INVALID {
+            return None;
+        }
+        v = (v << 4) | d as u128;
+    }
+    Some(v)
+}
+
 /// Encode `id` as 16 lowercase hex chars (big-endian) into `buf`, e.g. for a
 /// W3C `traceparent` span-id. Any ID minted at least one second after
 /// [`SVID_EPOCH`](crate::SVID_EPOCH) has a non-zero timestamp field, so the

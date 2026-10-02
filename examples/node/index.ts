@@ -15,7 +15,7 @@ import {
     svidEpoch,
 } from "./pkg/svid.js";
 
-// 12-bit entity tags (0..=4094). Persisted inside every ID — never renumber
+// 7-bit entity tags (0..=126). Persisted inside every ID — never renumber
 // or reuse a value after deployment.
 const TAG = {
     USER: 1,

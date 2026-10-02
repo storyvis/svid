@@ -7,8 +7,12 @@
 //! - same second → previous random + 1;
 //! - random field exhausted within a second → the timestamp borrows the next
 //!   second with a fresh random field (non-blocking; the clock catches up).
-//!   With the default 19 random bits, each fresh second has about 262K
-//!   remaining values on average; bursts can move logical time ahead.
+//!   At 26 random bits (default profile) this needs > 2^26 / 2 ≈ 33M
+//!   IDs/s/tag on average; bursts can move logical time ahead.
+//!
+//! Past the profile's last encodable second (see [`crate::type_bits`]) the
+//! infallible [`Sequencer::generate`] wraps the timestamp like 0.5.x;
+//! [`Sequencer::try_generate`] returns `None` instead.
 //!
 //! Clock clamp: the timestamp never goes below the highest timestamp already
 //! issued by this [`Sequencer`] (any tag), so a backwards `SystemTime` step
@@ -24,7 +28,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 use crate::SvidGenerator;
-use crate::type_bits::{RANDOM_MASK, encode_svid};
+use crate::type_bits::{IDTYPE_MASK, RANDOM_MASK, TIMESTAMP_MASK, encode_svid};
 
 #[repr(align(64))]
 struct Slot(AtomicU64);
@@ -58,37 +62,57 @@ impl Sequencer {
         &GLOBAL
     }
 
-    /// Next ID for `id_type` using the system clock.
+    /// Next ID for `id_type` (0..=127; higher bits are masked off) using the
+    /// system clock.
     #[inline]
-    pub fn generate(&self, id_type: u16, is_client: bool) -> i64 {
+    pub fn generate(&self, id_type: u8, is_client: bool) -> i64 {
         self.generate_at(id_type, is_client, SvidGenerator::current_timestamp())
     }
 
     /// Next ID for `id_type` with an explicit clock reading (seconds since
     /// [`SVID_EPOCH`](crate::SVID_EPOCH)).
     #[inline]
-    pub fn generate_at(&self, id_type: u16, is_client: bool, now: u32) -> i64 {
+    pub fn generate_at(&self, id_type: u8, is_client: bool, now: u32) -> i64 {
         self.next_with(id_type, is_client, now, SvidGenerator::random_field)
     }
 
+    /// Checked [`generate`](Self::generate): `None` if `id_type > 127` or the
+    /// timestamp is past the profile's end of life.
+    #[inline]
+    pub fn try_generate(&self, id_type: u8, is_client: bool) -> Option<i64> {
+        self.try_generate_at(id_type, is_client, SvidGenerator::current_timestamp())
+    }
+
+    /// Checked [`generate_at`](Self::generate_at).
+    #[inline]
+    pub fn try_generate_at(&self, id_type: u8, is_client: bool, now: u32) -> Option<i64> {
+        if id_type as i64 > IDTYPE_MASK || now as i64 > TIMESTAMP_MASK {
+            return None;
+        }
+        let (ts, r) = self.next_parts(id_type, now, SvidGenerator::random_field);
+        (ts as i64 <= TIMESTAMP_MASK).then(|| encode_svid(ts, is_client, id_type, r))
+    }
+
+    #[inline]
     pub(crate) fn next_with(
         &self,
-        id_type: u16,
+        id_type: u8,
         is_client: bool,
         now: u32,
-        mut rng: impl FnMut() -> u32,
+        rng: impl FnMut() -> u32,
     ) -> i64 {
-        assert!(
-            id_type <= 4095,
-            "id_type {} exceeds 12-bit range (0..=4095)",
-            id_type
+        debug_assert!(
+            id_type as i64 <= IDTYPE_MASK,
+            "id_type {id_type} exceeds 7-bit range (0..=127)"
         );
-        assert!(
-            now as i64 <= crate::TIMESTAMP_MASK,
-            "SVID64 timestamp exhausted"
-        );
-        let tag = id_type;
+        let tag = id_type & IDTYPE_MASK as u8;
+        let (ts, r) = self.next_parts(tag, now, rng);
+        encode_svid(ts, is_client, tag, r)
+    }
 
+    /// `(timestamp, random)` for the next ID of `tag` (already masked).
+    #[inline]
+    fn next_parts(&self, tag: u8, now: u32, mut rng: impl FnMut() -> u32) -> (u32, u32) {
         let last = self.last_ts.load(Relaxed);
         let now = if now > last {
             self.last_ts.fetch_max(now, Relaxed).max(now)
@@ -104,7 +128,7 @@ impl Sequencer {
         let prev = slot.fetch_add(1, Relaxed);
         let (lts, lr) = ((prev >> 32) as u32, prev as u32);
         if prev != 0 && now <= lts && lr < RANDOM_MASK as u32 {
-            return encode_svid(lts, is_client, tag, lr + 1);
+            return (lts, lr + 1);
         }
         let mut cur = prev.wrapping_add(1);
         loop {
@@ -114,19 +138,15 @@ impl Sequencer {
             } else if lr < RANDOM_MASK as u32 {
                 (lts, lr + 1)
             } else {
-                (lts + 1, rng() & RANDOM_MASK as u32)
+                (lts.wrapping_add(1), rng() & RANDOM_MASK as u32)
             };
-            assert!(
-                ts as i64 <= crate::TIMESTAMP_MASK,
-                "SVID64 timestamp exhausted"
-            );
             match slot.compare_exchange_weak(cur, ((ts as u64) << 32) | r as u64, Relaxed, Relaxed)
             {
                 Ok(_) => {
                     if ts > now {
                         self.last_ts.fetch_max(ts, Relaxed);
                     }
-                    return encode_svid(ts, is_client, tag, r);
+                    return (ts, r);
                 }
                 Err(actual) => cur = actual,
             }
@@ -172,5 +192,34 @@ mod tests {
         assert_eq!((f.timestamp_bits(), f.random_bits()), (101, 9));
         let g = s.next_with(1, false, 102, || 1);
         assert_eq!((g.timestamp_bits(), g.random_bits()), (102, 1));
+    }
+
+    #[test]
+    fn try_generate_rejects_out_of_range_without_panicking() {
+        let s = Sequencer::new();
+        let max = TIMESTAMP_MASK as u32;
+        assert!(s.try_generate_at(128, false, 100).is_none());
+        assert!(s.try_generate_at(1, false, max + 1).is_none());
+        let id = s.try_generate_at(127, true, max).unwrap();
+        assert_eq!(
+            (id.tag(), id.timestamp_bits(), id.is_client()),
+            (127, max, true)
+        );
+        // Exhausting the last second would borrow past end of life: None, not a wrap.
+        let mut saw_none = false;
+        for _ in 0..=(MASK as u64 + 1) {
+            if s.try_generate_at(127, true, max).is_none() {
+                saw_none = true;
+                break;
+            }
+        }
+        assert!(saw_none);
+        // The infallible path does not panic past end of life; it wraps like 0.5.x.
+        let _ = s.generate_at(1, false, u32::MAX);
+    }
+
+    #[test]
+    fn sequencer_is_small() {
+        assert!(std::mem::size_of::<Sequencer>() <= 128 * 64 + 64);
     }
 }

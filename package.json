@@ -1,7 +1,7 @@
 {
   "name": "svid",
-  "version": "0.4.0",
-  "description": "Stateless Verifiable ID — 64-bit ID generator (WASM)",
+  "version": "0.6.0",
+  "description": "Stateless Verifiable ID — typed 64-bit and 128-bit IDs (WASM)",
   "license": "Apache-2.0",
   "author": "Lava Bokam <lavajnv@gmail.com>",
   "homepage": "https://github.com/storyvis/svid",

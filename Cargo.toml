@@ -42,13 +42,13 @@ automerge = "0.8"
 serde_json = "1"
 
 [features]
-default = ["bits-long-life"]
+default = ["bits-balanced"]
 
 # Bit-layout profiles. Exactly one must be enabled.
-# Layout: [sign 1b][timestamp T][random M][source 1b][tag 12b] where T + M = 50.
-bits-long-life = []   # 31 ts (~68 yr) + 19 rand — default
-bits-balanced  = []   # 29 ts (~17 yr) + 21 rand
-bits-high-rand = []   # 28 ts (~8.5 yr) + 22 rand
+# SVID64 layout: [sign 1b][timestamp T][random M][source 1b][tag 7b] where T + M = 55.
+bits-long-life = []   # 31 ts (until 2094) + 24 rand
+bits-balanced  = []   # 29 ts (until 2043) + 26 rand — default
+bits-high-rand = []   # 28 ts (until 2034) + 27 rand
 
 serde = ["dep:serde"]
 strum = ["dep:strum"]

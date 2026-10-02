@@ -9,7 +9,7 @@ use svid::{
 
 #[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
 #[svid(registry = Reg)]
-#[repr(u16)]
+#[repr(u8)]
 pub enum Tag {
     ReqId = 1,
     TurnId = 2,
@@ -104,7 +104,7 @@ fn registry_new_monotonic() {
     let a: ReqId = reg.generate_id();
     let b: ReqId = reg.generate_id();
     assert!(b.to_i64() > a.to_i64());
-    assert_eq!(a.to_i64().tag(), Tag::ReqId as u16);
+    assert_eq!(a.to_i64().tag(), Tag::ReqId as u8);
 }
 
 #[test]
@@ -221,6 +221,41 @@ fn traceparent_format() {
         tp,
         format!("00-{}-{}-01", t.to_hex(), id_to_hex16(span.as_u64() as i64))
     );
+}
+
+#[test]
+fn trace_context_parse() {
+    use svid::{SpanId64, TraceContext};
+    let w3c = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let tc = TraceContext::parse(w3c).unwrap();
+    assert_eq!(tc.trace_id.as_u128(), 0x4bf92f3577b34da6a3ce929d0e0e4736);
+    assert_eq!(tc.parent_id.as_u64(), 0x00f067aa0ba902b7);
+    assert!(tc.sampled());
+    assert_eq!(tc.to_string(), w3c);
+    assert_eq!(w3c.parse::<TraceContext>(), Ok(tc));
+    // Future versions may append fields.
+    let v1 = "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00-extra";
+    assert!(!TraceContext::parse(v1).unwrap().sampled());
+    for bad in [
+        "",
+        &w3c[..54],
+        &format!("{w3c}-x"),
+        "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
+        "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+        "00_4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01x",
+        "é0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0",
+    ] {
+        assert!(TraceContext::parse(bad).is_err(), "{bad}");
+    }
+    let s = SpanId64::generate();
+    assert_eq!(s.to_string().parse::<SpanId64>(), Ok(s));
+    assert_eq!(s.to_hex().len(), SpanId64::HEX_LEN);
+    assert!(Svid128::try_generate(4096).is_none());
+    assert_eq!(Svid128::try_generate(4095).unwrap().tag(), 4095);
+    assert_eq!(Svid128::generate(4096 + 3).tag(), 3);
 }
 
 #[cfg(feature = "http")]

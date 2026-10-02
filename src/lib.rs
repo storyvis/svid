@@ -1,8 +1,9 @@
 //! Typed SVID64 and SVID128 entity identities for native Rust and WASM.
 //!
-//! SVID64 defaults to [sign:1][seconds since 2026:31][random:19][source:1][type:12].
-//! SVID128 uses [Unix milliseconds:48][random:67][source:1][type:12].
-//! Both share type bits 0..11 and source bit 12; tag 4095 is reserved.
+//! SVID64 defaults to `[sign:1][seconds since 2026:29][random:26][source:1][type:7]`
+//! (byte-compatible with 0.5.x; tag 127 is reserved).
+//! SVID128 is a UUIDv8: `[unix ms:48][ver:4][random:12][var:2][random:49][source:1][type:12]`
+//! (tag 4095 is reserved).
 //! Entity IDs are time-prefixed, with random ordering within a timestamp bucket.
 //! [`Sequencer`] provides process-local monotonic SVID64 generation only.
 //!
@@ -29,12 +30,13 @@ pub use encoding::{encode_hex16_into, encode_str_into, hex16_to_id, id_to_hex16}
 pub use generator::{GenerateId, IdGenerator, SvidKind};
 pub use monotonic::Sequencer;
 pub use svid128::Svid128;
-pub use trace::{SpanId64, TraceId128};
+pub use trace::{SpanId64, TraceContext, TraceId128};
 pub use type_bits::{
     HUMAN_READABLE_LEN, IDTYPE_BITS, IDTYPE_MASK, IDTYPE_SHIFT, RANDOM_BITS, RANDOM_ID_TAG,
-    RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH, SvidExt, TIMESTAMP_BITS,
-    TIMESTAMP_MASK, TIMESTAMP_SHIFT, decode_i64_base58, encode_svid, human_readable_to_id,
-    human_readable_to_id_expecting, id_to_human_readable,
+    RANDOM_ID_TAG128, RANDOM_MASK, RANDOM_SHIFT, SOURCE_BITS, SOURCE_SHIFT, SVID_EPOCH, SvidExt,
+    TAG128_BITS, TAG128_MASK, TIMESTAMP_BITS, TIMESTAMP_MASK, TIMESTAMP_SHIFT, decode_i64_base58,
+    encode_svid, human_readable_to_id, human_readable_to_id_expecting, id_to_human_readable,
+    try_encode_svid,
 };
 
 pub use svid_macros::{Svid, SvidDomain, bridge};
@@ -90,7 +92,7 @@ macro_rules! __svid_impl_http_width {
 pub struct DecomposedSvid {
     pub timestamp: u32,
     pub is_client: bool,
-    pub id_type: u16,
+    pub id_type: u8,
     pub random: u32,
 }
 
@@ -117,11 +119,12 @@ pub struct SvidGenerator;
 
 impl SvidGenerator {
     /// Generates a new SVID. Use `is_client = true` in WASM/client contexts.
+    /// `id_type` is 0..=127; higher bits are masked off (0.5.x behaviour).
     ///
     /// Stateless by default; with the `monotonic` cargo feature this is
     /// [`generate_monotonic`](Self::generate_monotonic).
     #[inline]
-    pub fn generate(id_type: u16, is_client: bool) -> i64 {
+    pub fn generate(id_type: u8, is_client: bool) -> i64 {
         #[cfg(feature = "monotonic")]
         return Self::generate_monotonic(id_type, is_client);
         #[cfg(not(feature = "monotonic"))]
@@ -131,16 +134,15 @@ impl SvidGenerator {
     /// Monotonic generation via the process-wide [`Sequencer`]: same format,
     /// zero in-process collisions, strictly increasing per tag, clock clamped.
     #[inline]
-    pub fn generate_monotonic(id_type: u16, is_client: bool) -> i64 {
+    pub fn generate_monotonic(id_type: u8, is_client: bool) -> i64 {
         Sequencer::global().generate(id_type, is_client)
     }
 
     #[cfg_attr(feature = "monotonic", allow(dead_code))]
-    fn generate_stateless(id_type: u16, is_client: bool) -> i64 {
-        assert!(
-            id_type <= 4095,
-            "id_type {} exceeds 12-bit range (0..=4095)",
-            id_type
+    fn generate_stateless(id_type: u8, is_client: bool) -> i64 {
+        debug_assert!(
+            id_type as i64 <= IDTYPE_MASK,
+            "id_type {id_type} exceeds 7-bit range (0..=127)"
         );
         let timestamp = Self::current_timestamp();
         let random = Self::random_field();
@@ -182,7 +184,7 @@ impl SvidGenerator {
 /// Mint a fresh typed ID. Works on both native and WASM targets.
 ///
 /// The source bit is set automatically based on build target:
-/// WASM → client-source (bit 7 = 1), native → server-source (bit 7 = 0).
+/// WASM → client-source, native → server-source.
 ///
 /// ```ignore
 /// let id: UserId = svid::mint::<UserIdMarker>();
@@ -198,7 +200,7 @@ where
     M::Id::from(id)
 }
 
-/// Untyped random ID (tag = 4095). Use when no domain tag applies.
+/// Untyped random ID (tag = [`RANDOM_ID_TAG`], 127). Use when no domain tag applies.
 /// Works on both native and WASM targets.
 #[inline]
 pub fn random_id() -> i64 {

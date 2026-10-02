@@ -8,8 +8,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::SvidGenerator;
 use crate::type_bits::{
-    HUMAN_READABLE_LEN, SVID_EPOCH, SvidExt, decode_i64_base58, encode_svid, human_readable_to_id,
-    human_readable_to_id_expecting, id_to_human_readable,
+    HUMAN_READABLE_LEN, IDTYPE_MASK, SVID_EPOCH, SvidExt, TAG128_MASK, decode_i64_base58,
+    human_readable_to_id, human_readable_to_id_expecting, id_to_human_readable, try_encode_svid,
 };
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -30,18 +30,22 @@ extern "C" {
 }
 
 #[wasm_bindgen(js_name = generateSvid)]
-pub fn generate_svid(id_type: u16) -> i64 {
-    assert!(
-        id_type <= 4095,
-        "id_type {} exceeds 12-bit range (0..=4095)",
-        id_type
-    );
-    SvidGenerator::generate(id_type, true)
+pub fn generate_svid(id_type: u8) -> Result<i64, JsError> {
+    if id_type as i64 > IDTYPE_MASK {
+        return Err(JsError::new("id_type exceeds 7-bit range (0..=127)"));
+    }
+    Ok(SvidGenerator::generate(id_type, true))
 }
 
 #[wasm_bindgen(js_name = encodeSvid)]
-pub fn encode_svid_js(timestamp: u32, is_client: bool, id_type: u16, random: u32) -> i64 {
-    encode_svid(timestamp, is_client, id_type, random)
+pub fn encode_svid_js(
+    timestamp: u32,
+    is_client: bool,
+    id_type: u8,
+    random: u32,
+) -> Result<i64, JsError> {
+    try_encode_svid(timestamp, is_client, id_type, random)
+        .ok_or_else(|| JsError::new("SVID field exceeds its bit budget"))
 }
 
 #[wasm_bindgen(js_name = decodeSvid)]
@@ -83,12 +87,12 @@ pub fn decode_human_readable(s: &str) -> Result<i64, JsError> {
 }
 
 #[wasm_bindgen(js_name = decodeHumanReadableExpecting)]
-pub fn decode_human_readable_expecting(s: &str, expected_tag: u16) -> Result<i64, JsError> {
+pub fn decode_human_readable_expecting(s: &str, expected_tag: u8) -> Result<i64, JsError> {
     human_readable_to_id_expecting(s, expected_tag).map_err(|e| JsError::new(&e))
 }
 
 #[wasm_bindgen(js_name = extractTag)]
-pub fn extract_tag(id: i64) -> u16 {
+pub fn extract_tag(id: i64) -> u8 {
     id.tag()
 }
 
@@ -124,8 +128,11 @@ pub fn human_readable_len() -> u32 {
 
 /// UUID text avoids loss of precision in JavaScript numbers.
 #[wasm_bindgen(js_name = generateSvid128)]
-pub fn generate_svid128(id_type: u16) -> String {
-    crate::Svid128::generate_with_source(id_type, true).to_string()
+pub fn generate_svid128(id_type: u16) -> Result<String, JsError> {
+    if id_type > TAG128_MASK {
+        return Err(JsError::new("id_type exceeds 12-bit range (0..=4095)"));
+    }
+    Ok(crate::Svid128::generate_with_source(id_type, true).to_string())
 }
 
 #[wasm_bindgen(js_name = normalizeSvid128)]

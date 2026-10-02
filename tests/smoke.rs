@@ -10,7 +10,7 @@ use std::str::FromStr;
     )
 )]
 #[svid(registry = IdRegistry)]
-#[repr(u16)]
+#[repr(u8)]
 pub enum SvidTag {
     UserId = 1,
     GroupId = 2,
@@ -109,11 +109,11 @@ fn domain_enum_roundtrip_and_dispatch() {
     let reg = IdRegistry::new(false);
     let f: FolderId = reg.folder_id.generate_id();
     let e: FolderEnum = f.into();
-    assert_eq!(e.tag(), SvidTag::FolderId as u16);
+    assert_eq!(e.tag(), SvidTag::FolderId as u8);
 
     let s: SharedFolderId = reg.shared_folder_id.generate_id();
     let es: FolderEnum = s.into();
-    assert_eq!(es.tag(), SvidTag::SharedFolderId as u16);
+    assert_eq!(es.tag(), SvidTag::SharedFolderId as u8);
 
     let parsed = FolderEnum::from_i64(f.to_i64()).expect("from_i64");
     assert_eq!(parsed, e);
@@ -136,15 +136,15 @@ fn registry_infers_id_type_from_binding() {
     let reg = IdRegistry::new(false);
     let u: UserId = reg.generate_id();
     let g: GroupId = reg.generate_id();
-    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u16);
-    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u16);
+    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u8);
+    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u8);
 }
 
 #[test]
 fn extract_tag_from_i64() {
     use svid::SvidExt;
-    let id = svid::SvidGenerator::generate(SvidTag::UserId as u16, false);
-    assert_eq!(id.tag(), SvidTag::UserId as u16);
+    let id = svid::SvidGenerator::generate(SvidTag::UserId as u8, false);
+    assert_eq!(id.tag(), SvidTag::UserId as u8);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn generate_random_uses_reserved_tag() {
     use svid::SvidExt;
     let id = svid::SvidGenerator::generate_random(false);
     assert_eq!(id.tag(), svid::RANDOM_ID_TAG);
-    assert_eq!(svid::RANDOM_ID_TAG, 4095);
+    assert_eq!(svid::RANDOM_ID_TAG, 127);
 }
 
 #[test]
@@ -177,12 +177,12 @@ fn bit_layout_sums_to_64() {
 
 #[test]
 fn tag_is_bit_stable_at_lsb() {
-    // Tag extraction must be `id & 0xFFF` regardless of compile-time profile —
+    // Tag extraction must be `id & 0x7F` regardless of compile-time profile —
     // downstream SQL / JS code depends on this property.
     use svid::SvidExt;
     let id = svid::SvidGenerator::generate(5, false);
     assert_eq!(id.tag(), 5);
-    assert_eq!((id & 0xFFF) as u16, 5);
+    assert_eq!((id & 0x7F) as u8, 5);
 }
 
 #[test]
@@ -261,9 +261,9 @@ fn sign_bit_set_rejected_by_decode_base58() {
 fn mint_produces_correct_tag() {
     use svid::SvidExt;
     let u: UserId = svid::mint::<UserIdMarker>();
-    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u16);
+    assert_eq!(u.to_i64().tag(), SvidTag::UserId as u8);
     let g: GroupId = svid::mint::<GroupIdMarker>();
-    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u16);
+    assert_eq!(g.to_i64().tag(), SvidTag::GroupId as u8);
 }
 
 #[test]
