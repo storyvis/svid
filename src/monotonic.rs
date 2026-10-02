@@ -113,6 +113,9 @@ impl Sequencer {
     /// `(timestamp, random)` for the next ID of `tag` (already masked).
     #[inline]
     fn next_parts(&self, tag: u8, now: u32, mut rng: impl FnMut() -> u32) -> (u32, u32) {
+        // An empty slot reads as (ts 0, random 0); issuing ts >= 1 keeps it from
+        // looking current, so the first ID of every tag gets a fresh random field.
+        let now = now.max(1);
         let last = self.last_ts.load(Relaxed);
         let now = if now > last {
             self.last_ts.fetch_max(now, Relaxed).max(now)
@@ -133,7 +136,7 @@ impl Sequencer {
         let mut cur = prev.wrapping_add(1);
         loop {
             let (lts, lr) = ((cur >> 32) as u32, cur as u32);
-            let (ts, r) = if cur == 0 || now > lts {
+            let (ts, r) = if now > lts {
                 (now, rng() & RANDOM_MASK as u32)
             } else if lr < RANDOM_MASK as u32 {
                 (lts, lr + 1)
@@ -216,6 +219,15 @@ mod tests {
         assert!(saw_none);
         // The infallible path does not panic past end of life; it wraps like 0.5.x.
         let _ = s.generate_at(1, false, u32::MAX);
+    }
+
+    #[test]
+    fn clock_at_epoch_still_seeds_randomly() {
+        for seed in [7, 9] {
+            let s = Sequencer::new();
+            let a = s.next_with(1, true, 0, || seed);
+            assert_eq!((a.timestamp_bits(), a.random_bits()), (1, seed));
+        }
     }
 
     #[test]

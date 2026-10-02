@@ -128,7 +128,7 @@ pub(crate) fn hex_into<const N: usize>(mut v: u128, buf: &mut [u8; N]) -> &str {
 pub(crate) fn decode_hex_exact(s: &str, n: usize) -> Result<u128, String> {
     if s.len() != n {
         return Err(format!(
-            "invalid hex SVID: expected {} chars, got {}",
+            "invalid hex id: expected {} chars, got {}",
             n,
             s.len()
         ));
@@ -138,7 +138,7 @@ pub(crate) fn decode_hex_exact(s: &str, n: usize) -> Result<u128, String> {
         let d = HEX_DECODE[c as usize];
         if d == INVALID {
             return Err(format!(
-                "invalid hex SVID: non-lowercase-hex character at byte {}",
+                "invalid hex id: non-lowercase-hex character at byte {}",
                 i
             ));
         }

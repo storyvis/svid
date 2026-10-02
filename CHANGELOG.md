@@ -14,11 +14,16 @@ Added:
 - `TAG128_BITS`, `TAG128_MASK`, `RANDOM_ID_TAG128`.
 
 Changed (breaking):
-- `SvidKind::TAG` is `u16` (was `u8`) so one trait covers both widths.
+- `SvidKind::TAG` is `u16` (was `u8`) so one trait covers both widths, and
+  `SvidKind` has a new associated type `Raw: SvidValue` (`i64` or `Svid128`);
+  `mint` / `IdGenerator` require `Id: From<Raw>`. Hand-written `SvidKind`
+  impls must add `type Raw = i64;`.
 - `SvidExt::tag()` and the SVID64 APIs keep `u8`; 128-bit APIs use `u16`.
 - `#[derive(Svid)]` accepts `#[repr(u8)]` or `#[repr(u16)]` and rejects tags
   that do not fit the width (SVID64: 0..=126; previously 128..=255 were
   silently truncated).
+- The monotonic sequencer issues timestamp 1 for a clock at or before
+  `SVID_EPOCH` (timestamp 0), so the first ID of each tag is randomly seeded.
 - WASM `generateSvid`, `encodeSvid` and `generateSvid128` return `Result`
   (throw a JS `Error`) instead of aborting on out-of-range input; `encodeSvid`
   rejects oversized fields.

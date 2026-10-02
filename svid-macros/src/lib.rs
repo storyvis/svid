@@ -194,6 +194,17 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
         }
     };
     let tag_ty = if wide { quote!(u16) } else { quote!(u8) };
+    // 0.5.x `to_base58` is variable-length bs58; `to_str` is the fixed 11-char form.
+    let encode_body = if wide {
+        quote!(#helpers::id_to_human_readable(self.0))
+    } else {
+        quote!(::svid::bs58::encode(self.0.to_be_bytes()).into_string())
+    };
+    let encode_into_doc = if wide {
+        "Canonical 36-char UUID text (same as `to_str`) into a stack buffer."
+    } else {
+        "Fixed 11-char base58 (same as `to_str`) into a stack buffer."
+    };
     let qualified_label = format!("{}::{}", enum_name, v);
     quote! {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,7 +221,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
 
         impl #v {
             pub fn #encode_name(&self) -> String {
-                #helpers::id_to_human_readable(self.0)
+                #encode_body
             }
 
             pub fn #decode_name(s: &str) -> ::std::result::Result<Self, String> {
@@ -241,7 +252,7 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident, wide: bool) -> T
             pub fn to_raw(&self) -> #raw { self.0 }
             #narrow_methods
 
-            /// Fixed 11-char base58 (same as `to_str`) into a stack buffer.
+            #[doc = #encode_into_doc]
             #[inline]
             pub fn encode_into<'a>(&self, buf: &'a mut [u8; #helpers::HUMAN_READABLE_LEN]) -> &'a str {
                 #helpers::encode_str_into(self.0, buf)

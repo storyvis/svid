@@ -122,3 +122,23 @@ fn default_profile_is_054_default() {
     );
     assert_eq!(svid::RANDOM_ID_TAG, 127);
 }
+
+#[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Tag {
+    UserId = 1,
+}
+
+#[test]
+fn derived_to_base58_is_054_variable_length() {
+    let (_, _, _, _, id, _) = VECTORS[1];
+    let u = UserId(id);
+    assert_eq!(
+        u.to_base58(),
+        svid::bs58::encode(id.to_be_bytes()).into_string()
+    );
+    assert!(u.to_base58().len() < svid::HUMAN_READABLE_LEN);
+    assert_eq!(u.to_str().len(), svid::HUMAN_READABLE_LEN);
+    assert_eq!(UserId::from_base58(&u.to_base58()), Ok(u));
+    assert_eq!(UserId::from_base58(&u.to_str()), Ok(u));
+}
