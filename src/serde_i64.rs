@@ -79,10 +79,21 @@ mod tests {
 
     #[test]
     fn serializes_as_string_and_roundtrips() {
-        let v = Poly { id: 342382391799224841, opt: Some(123456789012345678) };
+        let v = Poly {
+            id: 342382391799224841,
+            opt: Some(123456789012345678),
+        };
         let json = serde_json::to_value(&v).unwrap();
-        assert!(json["id"].is_string(), "id must be a JSON string, got {}", json["id"]);
-        assert!(json["opt"].is_string(), "opt must be a JSON string, got {}", json["opt"]);
+        assert!(
+            json["id"].is_string(),
+            "id must be a JSON string, got {}",
+            json["id"]
+        );
+        assert!(
+            json["opt"].is_string(),
+            "opt must be a JSON string, got {}",
+            json["opt"]
+        );
         let back: Poly = serde_json::from_value(json).unwrap();
         assert_eq!(back, v);
     }
@@ -98,7 +109,10 @@ mod tests {
             s.contains(&format!("\"{}\"", crate::id_to_human_readable(big))),
             "expected base58 string on the wire, got {s}"
         );
-        assert!(!s.contains(&big.to_string()), "raw i64 leaked into JSON: {s}");
+        assert!(
+            !s.contains(&big.to_string()),
+            "raw i64 leaked into JSON: {s}"
+        );
         let back: Poly = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, big);
     }

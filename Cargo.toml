@@ -3,9 +3,9 @@ members = [".", "svid-macros"]
 
 [package]
 name = "svid"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2024"
-description = "Stateless Verifiable ID — native + WASM 64-bit ID generator"
+description = "Stateless Verifiable ID — native + WASM typed 64-bit and 128-bit IDs"
 license = "Apache-2.0"
 authors = ["lavajnv@gmail.com (Lava Bokam)"]
 repository = "https://github.com/storyvis/svid"
@@ -22,12 +22,15 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rand = "0.9"
 bs58 = "0.5"
-svid-macros = { path = "svid-macros", version = "0.5.4" }
+svid-macros = { path = "svid-macros", version = "0.6.0" }
 serde = { version = "1", features = ["derive"], optional = true }
 strum = { version = "0.27", features = ["derive"], optional = true }
 diesel = { version = "2", features = ["postgres"], optional = true }
 ts-rs = { version = "10", optional = true }
 autosurgeon = { version = "0.11", optional = true }
+http = { version = "1", optional = true }
+postgres-types = { version = "0.2", optional = true }
+bytes = { version = "1", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -35,23 +38,28 @@ js-sys = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
-automerge = "0.7"
+automerge = "0.8"
 serde_json = "1"
 
 [features]
 default = ["bits-balanced"]
 
 # Bit-layout profiles. Exactly one must be enabled.
-# Layout: [sign 1b][timestamp T][random M][source 1b][tag 7b] where T + M = 55.
-bits-long-life = []   # 31 ts (~68 yr) + 24 rand — original timestamp range, lowest collision resistance
-bits-balanced  = []   # 29 ts (~17 yr) + 26 rand — recommended default
-bits-high-rand = []   # 28 ts (~8.5 yr) + 27 rand — short-lived data, highest collision resistance
+# SVID64 layout: [sign 1b][timestamp T][random M][source 1b][tag 7b] where T + M = 55.
+bits-long-life = []   # 31 ts (until 2094) + 24 rand
+bits-balanced  = []   # 29 ts (until 2043) + 26 rand — default
+bits-high-rand = []   # 28 ts (until 2034) + 27 rand
 
 serde = ["dep:serde"]
 strum = ["dep:strum"]
 diesel = ["dep:diesel"]
 ts = ["dep:ts-rs"]
 autosurgeon = ["dep:autosurgeon"]
+# Make SvidGenerator::generate (and mint/registries/wasm generateSvid) monotonic.
+monotonic = []
+# From/TryFrom conversions with http::HeaderValue.
+http = ["dep:http"]
+postgres = ["dep:postgres-types", "dep:bytes"]
 
 [profile.release]
 opt-level     = 3

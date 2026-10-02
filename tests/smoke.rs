@@ -1,7 +1,14 @@
 use std::str::FromStr;
 
 #[derive(svid::Svid, Copy, Clone, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "strum", derive(svid::strum::Display, svid::strum::EnumString, svid::strum::IntoStaticStr))]
+#[cfg_attr(
+    feature = "strum",
+    derive(
+        svid::strum::Display,
+        svid::strum::EnumString,
+        svid::strum::IntoStaticStr
+    )
+)]
 #[svid(registry = IdRegistry)]
 #[repr(u8)]
 pub enum SvidTag {
@@ -93,8 +100,8 @@ fn newtype_rejects_wrong_tag() {
 #[test]
 fn marker_kind_tag_matches_svid_tag() {
     use svid::SvidKind;
-    assert_eq!(<UserIdMarker as SvidKind>::TAG, SvidTag::UserId as u8);
-    assert_eq!(<GroupIdMarker as SvidKind>::TAG, SvidTag::GroupId as u8);
+    assert_eq!(<UserIdMarker as SvidKind>::TAG, SvidTag::UserId as u16);
+    assert_eq!(<GroupIdMarker as SvidKind>::TAG, SvidTag::GroupId as u16);
 }
 
 #[test]
@@ -162,7 +169,10 @@ fn bit_layout_sums_to_64() {
         + svid::RANDOM_BITS as u32
         + svid::SOURCE_BITS as u32
         + svid::IDTYPE_BITS as u32;
-    assert_eq!(total, 64, "active profile must sum to 64 bits including sign");
+    assert_eq!(
+        total, 64,
+        "active profile must sum to 64 bits including sign"
+    );
 }
 
 #[test]
@@ -302,7 +312,7 @@ mod strum_smoke {
 #[cfg(feature = "autosurgeon")]
 mod autosurgeon_smoke {
     use super::*;
-    use autosurgeon::{hydrate, reconcile, Hydrate, Reconcile};
+    use autosurgeon::{Hydrate, Reconcile, hydrate, reconcile};
 
     #[derive(Reconcile, Hydrate, Debug, PartialEq)]
     struct Doc {

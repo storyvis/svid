@@ -1,7 +1,7 @@
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 
-use svid::{id_to_human_readable, DecomposedSvid, SvidGenerator};
+use svid::{DecomposedSvid, SvidGenerator, id_to_human_readable};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -19,8 +19,8 @@ fn main() -> ExitCode {
         return usage(prog, "too many arguments");
     }
 
-    let idtype: u8 = match idtype_arg.parse::<u32>() {
-        Ok(v) if v <= 127 => v as u8,
+    let idtype: u8 = match idtype_arg.parse::<u8>() {
+        Ok(v) if v <= 127 => v,
         _ => return usage(prog, "idtype must be an integer in 0..=127"),
     };
     let count: usize = match count_arg.parse::<usize>() {

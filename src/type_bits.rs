@@ -1,6 +1,6 @@
-//! Bit-level helpers for the SVID layout.
+//! Bit-level helpers for the SVID64 layout.
 //!
-//! 64-bit layout (default `bits-balanced` profile):
+//! 64-bit layout (default `bits-balanced` profile), byte-compatible with 0.5.x:
 //!
 //! ```text
 //!  63 62                   34 33                            8 7  6     0
@@ -16,15 +16,23 @@
 //! is reallocated. Timestamp is at the top (just below the sign bit) so
 //! i64 ordering matches chronological order, as in ULID / Snowflake / UUIDv7.
 //!
-//! Profile selection (Cargo features):
-//! - `bits-long-life`: T=31 (68 yr), M=24
-//! - `bits-balanced` (default): T=29 (17 yr), M=26
-//! - `bits-high-rand`: T=28 (8.5 yr), M=27
+//! Profile selection (Cargo features), with the last second each can encode:
+//! - `bits-long-life`: T=31, M=24 — until 2094-01-19T03:14:07Z
+//! - `bits-balanced` (default): T=29, M=26 — until 2043-01-05T18:48:31Z
+//! - `bits-high-rand`: T=28, M=27 — until 2034-07-04T21:24:15Z
+//!
+//! The 128-bit types ([`Svid128`](crate::Svid128),
+//! [`TraceId128`](crate::TraceId128)) use a wider 12-bit tag
+//! ([`TAG128_BITS`]); SVID64 keeps 7 bits.
 
 pub const SVID_EPOCH: i64 = 1767225600;
 
 // --- Bit-layout profile selection (compile-time) ---
-#[cfg(not(any(feature = "bits-long-life", feature = "bits-balanced", feature = "bits-high-rand")))]
+#[cfg(not(any(
+    feature = "bits-long-life",
+    feature = "bits-balanced",
+    feature = "bits-high-rand"
+)))]
 compile_error!(
     "svid: enable exactly one bit-layout feature: bits-long-life | bits-balanced | bits-high-rand"
 );
@@ -58,12 +66,19 @@ pub const IDTYPE_MASK: i64 = (1 << IDTYPE_BITS) - 1;
 pub const RANDOM_MASK: i64 = (1 << RANDOM_BITS) - 1;
 pub const TIMESTAMP_MASK: i64 = (1 << TIMESTAMP_BITS) - 1;
 
-/// Reserved tag value for untyped / random IDs minted via
-/// [`SvidGenerator::generate_random`]. Lets `svid` stand in for nanoid /
-/// uuidv4 when no domain enum is involved. User-defined `#[derive(Svid)]`
-/// enums must not use this value as a discriminant; the derive macro
-/// enforces this at compile time.
+/// Reserved SVID64 tag for untyped / random IDs minted via
+/// [`SvidGenerator::generate_random`](crate::SvidGenerator::generate_random).
+/// Lets `svid` stand in for nanoid / uuidv4 when no domain enum is involved.
+/// `#[derive(Svid)]` enums must not use it; the derive enforces this at
+/// compile time.
 pub const RANDOM_ID_TAG: u8 = 127;
+
+/// Tag width of the 128-bit types ([`Svid128`](crate::Svid128),
+/// [`TraceId128`](crate::TraceId128)).
+pub const TAG128_BITS: u32 = 12;
+pub const TAG128_MASK: u16 = (1 << TAG128_BITS) - 1;
+/// Reserved 128-bit tag for untyped IDs (`generate_random`).
+pub const RANDOM_ID_TAG128: u16 = TAG128_MASK;
 
 // Field order [sign][ts][rand][src][tag]: tag is LSB, ts is at the top.
 pub const IDTYPE_SHIFT: u8 = 0;
@@ -108,12 +123,26 @@ impl SvidExt for i64 {
 }
 
 /// Pack the four SVID fields into a single `i64`.
+///
+/// Each field is masked to its bit budget (0.5.x behaviour), so oversized
+/// input is truncated, never rejected. Use [`try_encode_svid`] to reject it.
 #[inline]
 pub fn encode_svid(timestamp: u32, is_client: bool, tag: u8, random: u32) -> i64 {
     ((timestamp as i64 & TIMESTAMP_MASK) << TIMESTAMP_SHIFT)
         | ((random as i64 & RANDOM_MASK) << RANDOM_SHIFT)
-        | ((if is_client { 1i64 } else { 0i64 }) << SOURCE_SHIFT)
+        | ((is_client as i64) << SOURCE_SHIFT)
         | ((tag as i64 & IDTYPE_MASK) << IDTYPE_SHIFT)
+}
+
+/// Checked [`encode_svid`]: `None` if any field exceeds its bit budget
+/// (including a timestamp past the profile's end of life).
+#[inline]
+pub fn try_encode_svid(timestamp: u32, is_client: bool, tag: u8, random: u32) -> Option<i64> {
+    if timestamp as i64 > TIMESTAMP_MASK || tag as i64 > IDTYPE_MASK || random as i64 > RANDOM_MASK
+    {
+        return None;
+    }
+    Some(encode_svid(timestamp, is_client, tag, random))
 }
 
 /// Encode an `i64` SVID as a fixed-width 11-char string.
@@ -122,16 +151,7 @@ pub fn encode_svid(timestamp: u32, is_client: bool, tag: u8, random: u32) -> i64
 /// `HUMAN_READABLE_LEN` characters. The padding character is `'1'`
 /// (the base58 representation of zero).
 pub fn id_to_human_readable(id: i64) -> String {
-    let s = bs58::encode(id.to_be_bytes()).into_string();
-    debug_assert!(s.len() <= HUMAN_READABLE_LEN);
-    if s.len() == HUMAN_READABLE_LEN {
-        s
-    } else {
-        let pad = HUMAN_READABLE_LEN - s.len();
-        let mut out = "1".repeat(pad);
-        out.push_str(&s);
-        out
-    }
+    crate::encoding::encode_str_into(id, &mut [0u8; HUMAN_READABLE_LEN]).to_owned()
 }
 
 /// Decode a base58 string into an `i64` SVID.
@@ -144,6 +164,14 @@ pub fn id_to_human_readable(id: i64) -> String {
 /// shorter than `HUMAN_READABLE_LEN`, padding `'1'` chars get decoded as
 /// leading zero bytes, which we strip back here.
 pub fn decode_i64_base58(s: &str) -> Result<i64, String> {
+    // Fast path; invalid input falls through to `bs58` for its exact error text.
+    if let Some(v) = crate::encoding::decode_base58_u64(s.as_bytes()) {
+        let id = v as i64;
+        if id < 0 {
+            return Err("invalid SVID: sign bit (bit 63) must be 0".to_string());
+        }
+        return Ok(id);
+    }
     let bytes = bs58::decode(s).into_vec().map_err(|e| e.to_string())?;
     let trimmed: &[u8] = if bytes.len() > 8 {
         let excess = bytes.len() - 8;

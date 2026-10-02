@@ -6,11 +6,11 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::type_bits::{
-    decode_i64_base58, encode_svid, human_readable_to_id, human_readable_to_id_expecting,
-    id_to_human_readable, SvidExt, HUMAN_READABLE_LEN, SVID_EPOCH,
-};
 use crate::SvidGenerator;
+use crate::type_bits::{
+    HUMAN_READABLE_LEN, IDTYPE_MASK, SVID_EPOCH, SvidExt, TAG128_MASK, decode_i64_base58,
+    human_readable_to_id, human_readable_to_id_expecting, id_to_human_readable, try_encode_svid,
+};
 
 #[wasm_bindgen(typescript_custom_section)]
 const TS_DECODED_SVID: &'static str = r#"
@@ -30,18 +30,22 @@ extern "C" {
 }
 
 #[wasm_bindgen(js_name = generateSvid)]
-pub fn generate_svid(id_type: u8) -> i64 {
-    debug_assert!(
-        id_type <= 127,
-        "id_type {} exceeds 7-bit range (0..=127)",
-        id_type
-    );
-    SvidGenerator::generate(id_type, true)
+pub fn generate_svid(id_type: u8) -> Result<i64, JsError> {
+    if id_type as i64 > IDTYPE_MASK {
+        return Err(JsError::new("id_type exceeds 7-bit range (0..=127)"));
+    }
+    Ok(SvidGenerator::generate(id_type, true))
 }
 
 #[wasm_bindgen(js_name = encodeSvid)]
-pub fn encode_svid_js(timestamp: u32, is_client: bool, id_type: u8, random: u32) -> i64 {
-    encode_svid(timestamp, is_client, id_type, random)
+pub fn encode_svid_js(
+    timestamp: u32,
+    is_client: bool,
+    id_type: u8,
+    random: u32,
+) -> Result<i64, JsError> {
+    try_encode_svid(timestamp, is_client, id_type, random)
+        .ok_or_else(|| JsError::new("SVID field exceeds its bit budget"))
 }
 
 #[wasm_bindgen(js_name = decodeSvid)]
@@ -120,4 +124,29 @@ pub fn svid_epoch() -> i64 {
 #[wasm_bindgen(js_name = humanReadableLen)]
 pub fn human_readable_len() -> u32 {
     HUMAN_READABLE_LEN as u32
+}
+
+/// UUID text avoids loss of precision in JavaScript numbers.
+#[wasm_bindgen(js_name = generateSvid128)]
+pub fn generate_svid128(id_type: u16) -> Result<String, JsError> {
+    if id_type > TAG128_MASK {
+        return Err(JsError::new("id_type exceeds 12-bit range (0..=4095)"));
+    }
+    Ok(crate::Svid128::generate_with_source(id_type, true).to_string())
+}
+
+#[wasm_bindgen(js_name = normalizeSvid128)]
+pub fn normalize_svid128(value: &str) -> Result<String, JsError> {
+    value
+        .parse::<crate::Svid128>()
+        .map(|id| id.to_string())
+        .map_err(|e| JsError::new(&e))
+}
+
+#[wasm_bindgen(js_name = extractSvid128Tag)]
+pub fn extract_svid128_tag(value: &str) -> Result<u16, JsError> {
+    value
+        .parse::<crate::Svid128>()
+        .map(|id| id.tag())
+        .map_err(|e| JsError::new(&e))
 }
