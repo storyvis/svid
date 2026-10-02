@@ -180,13 +180,32 @@ fn quote_id_block(enum_name: &Ident, v: &Ident, marker: &Ident) -> TokenStream2 
 
             #[inline]
             pub fn to_i64(&self) -> i64 { self.0 }
+
+            /// Fixed 11-char base58 (same as `to_str`) into a stack buffer.
+            #[inline]
+            pub fn encode_into<'a>(&self, buf: &'a mut [u8; ::svid::HUMAN_READABLE_LEN]) -> &'a str {
+                ::svid::encode_str_into(self.0, buf)
+            }
+
+            /// 16 lowercase hex chars (W3C span-id form).
+            #[inline]
+            pub fn to_hex16(&self) -> String {
+                ::svid::id_to_hex16(self.0)
+            }
+
+            #[inline]
+            pub fn encode_hex16_into<'a>(&self, buf: &'a mut [u8; 16]) -> &'a str {
+                ::svid::encode_hex16_into(self.0, buf)
+            }
         }
 
         impl ::std::fmt::Display for #v {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                write!(f, "{}", self.to_str())
+                f.write_str(self.encode_into(&mut [0u8; ::svid::HUMAN_READABLE_LEN]))
             }
         }
+
+        ::svid::__svid_impl_http!(#v);
 
         impl ::std::str::FromStr for #v {
             type Err = String;
@@ -298,6 +317,14 @@ fn quote_registry_block(registry: &Ident, variants: &[Ident]) -> TokenStream2 {
             pub fn new(is_client: bool) -> Self {
                 Self {
                     #( #fields: ::svid::IdGenerator::new(is_client), )*
+                }
+            }
+
+            /// Registry whose generators use the process-wide monotonic
+            /// sequencer (collision-free in-process, same ID format).
+            pub fn new_monotonic(is_client: bool) -> Self {
+                Self {
+                    #( #fields: ::svid::IdGenerator::new_monotonic(is_client), )*
                 }
             }
 
@@ -427,6 +454,11 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
                 ::svid::id_to_human_readable(self.to_i64())
             }
 
+            #[inline]
+            pub fn encode_into<'a>(&self, buf: &'a mut [u8; ::svid::HUMAN_READABLE_LEN]) -> &'a str {
+                ::svid::encode_str_into(self.to_i64(), buf)
+            }
+
             pub fn from_str_id(s: &str) -> ::std::result::Result<Self, String> {
                 let id_val = ::svid::human_readable_to_id(s)?;
                 Self::from_i64(id_val)
@@ -435,9 +467,11 @@ fn expand_svid_domain(input: DeriveInput) -> Result<TokenStream2, Error> {
 
         impl ::std::fmt::Display for #enum_name {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                write!(f, "{}", self.to_str())
+                f.write_str(self.encode_into(&mut [0u8; ::svid::HUMAN_READABLE_LEN]))
             }
         }
+
+        ::svid::__svid_impl_http!(#enum_name);
 
         impl ::std::str::FromStr for #enum_name {
             type Err = String;

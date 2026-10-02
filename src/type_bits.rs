@@ -122,16 +122,7 @@ pub fn encode_svid(timestamp: u32, is_client: bool, tag: u8, random: u32) -> i64
 /// `HUMAN_READABLE_LEN` characters. The padding character is `'1'`
 /// (the base58 representation of zero).
 pub fn id_to_human_readable(id: i64) -> String {
-    let s = bs58::encode(id.to_be_bytes()).into_string();
-    debug_assert!(s.len() <= HUMAN_READABLE_LEN);
-    if s.len() == HUMAN_READABLE_LEN {
-        s
-    } else {
-        let pad = HUMAN_READABLE_LEN - s.len();
-        let mut out = "1".repeat(pad);
-        out.push_str(&s);
-        out
-    }
+    crate::encoding::encode_str_into(id, &mut [0u8; HUMAN_READABLE_LEN]).to_owned()
 }
 
 /// Decode a base58 string into an `i64` SVID.
@@ -144,6 +135,14 @@ pub fn id_to_human_readable(id: i64) -> String {
 /// shorter than `HUMAN_READABLE_LEN`, padding `'1'` chars get decoded as
 /// leading zero bytes, which we strip back here.
 pub fn decode_i64_base58(s: &str) -> Result<i64, String> {
+    // Fast path; invalid input falls through to `bs58` for its exact error text.
+    if let Some(v) = crate::encoding::decode_base58_u64(s.as_bytes()) {
+        let id = v as i64;
+        if id < 0 {
+            return Err("invalid SVID: sign bit (bit 63) must be 0".to_string());
+        }
+        return Ok(id);
+    }
     let bytes = bs58::decode(s).into_vec().map_err(|e| e.to_string())?;
     let trimmed: &[u8] = if bytes.len() > 8 {
         let excess = bytes.len() - 8;

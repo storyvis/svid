@@ -16,6 +16,7 @@ pub trait SvidKind {
 /// associated with `K`.
 pub struct IdGenerator<K> {
     is_client: bool,
+    monotonic: bool,
     _phantom: PhantomData<K>,
 }
 
@@ -26,12 +27,27 @@ where
     pub fn new(is_client: bool) -> Self {
         Self {
             is_client,
+            monotonic: false,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Generator backed by the process-wide monotonic [`Sequencer`](crate::Sequencer).
+    pub fn new_monotonic(is_client: bool) -> Self {
+        Self {
+            is_client,
+            monotonic: true,
             _phantom: PhantomData,
         }
     }
 
     pub fn generate_id(&self) -> K::Id {
-        K::Id::from(SvidGenerator::generate(K::TAG, self.is_client))
+        let id = if self.monotonic {
+            SvidGenerator::generate_monotonic(K::TAG, self.is_client)
+        } else {
+            SvidGenerator::generate(K::TAG, self.is_client)
+        };
+        K::Id::from(id)
     }
 }
 
